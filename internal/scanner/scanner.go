@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"prop-voter/config"
@@ -184,22 +185,36 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 			// New proposal, create it
 			newProposal := s.convertToModel(chain, proposal)
 
-			// If this is the first scan, mark historical proposals as already notified
-			// Only notify for truly new proposals discovered after initial setup
-			if isFirstScan {
+			// Check if proposal is actively voting to determine notification behavior
+			isActivelyVoting := strings.Contains(strings.ToUpper(proposal.Status), "VOTING")
+
+			if isFirstScan && !isActivelyVoting {
+				// Historical non-voting proposals: mark as already notified
 				newProposal.NotificationSent = true
 				s.logger.Debug("Historical proposal stored without notification",
 					zap.String("chain", chain.Name),
 					zap.String("proposal_id", proposal.ProposalID),
 					zap.String("title", proposal.Content.Title),
+					zap.String("status", proposal.Status),
 				)
 			} else {
+				// New proposals OR actively voting proposals: queue notification
 				newProposal.NotificationSent = false
-				s.logger.Info("New proposal found - notification queued",
-					zap.String("chain", chain.Name),
-					zap.String("proposal_id", proposal.ProposalID),
-					zap.String("title", proposal.Content.Title),
-				)
+				if isActivelyVoting {
+					s.logger.Info("Active voting proposal found - notification queued",
+						zap.String("chain", chain.Name),
+						zap.String("proposal_id", proposal.ProposalID),
+						zap.String("title", proposal.Content.Title),
+						zap.String("status", proposal.Status),
+					)
+				} else {
+					s.logger.Info("New proposal found - notification queued",
+						zap.String("chain", chain.Name),
+						zap.String("proposal_id", proposal.ProposalID),
+						zap.String("title", proposal.Content.Title),
+						zap.String("status", proposal.Status),
+					)
+				}
 			}
 
 			if err := s.db.Create(&newProposal).Error; err != nil {
