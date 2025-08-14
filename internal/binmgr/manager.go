@@ -313,6 +313,11 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 			continue
 		}
 
+		// If pattern is specific (no wildcards) and matches exactly, use it
+		if pattern != "" && !strings.Contains(pattern, "*") && strings.EqualFold(name, pattern) {
+			return &asset, nil
+		}
+
 		// Check if asset matches our platform
 		osMatch := false
 		archMatch := false
@@ -337,7 +342,22 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 		}
 	}
 
-	// Fallback: try to find any asset that contains the OS
+	// Fallback: if pattern is specified, try to find any asset that matches the pattern
+	// (even without platform matching - useful for assets like "junod" that don't have platform suffixes)
+	if pattern != "" {
+		for _, asset := range assets {
+			name := strings.ToLower(asset.Name)
+			if matchesPattern(name, pattern) {
+				m.logger.Debug("Using pattern-matched asset without platform check",
+					zap.String("asset", asset.Name),
+					zap.String("pattern", pattern),
+				)
+				return &asset, nil
+			}
+		}
+	}
+
+	// Final fallback: try to find any asset that contains the OS
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
 		if strings.Contains(name, runtime.GOOS) {
@@ -345,7 +365,7 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 		}
 	}
 
-	return nil, fmt.Errorf("no suitable asset found for platform %s/%s", runtime.GOOS, runtime.GOARCH)
+	return nil, fmt.Errorf("no suitable asset found for platform %s/%s with pattern %s", runtime.GOOS, runtime.GOARCH, pattern)
 }
 
 // matchesPattern checks if a string matches a simple pattern (supports * wildcards)
