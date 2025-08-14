@@ -1,0 +1,46 @@
+[Unit]
+Description=Prop-Voter - Cosmos Governance Bot
+Documentation=https://github.com/your-org/prop-voter
+After=network-online.target
+Wants=network-online.target
+Requires=network.target
+
+[Service]
+Type=simple
+User=prop-voter
+Group=prop-voter
+WorkingDirectory=/opt/prop-voter
+ExecStart=/opt/prop-voter/prop-voter -config /opt/prop-voter/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=10
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/prop-voter
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# Environment
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/opt/prop-voter
+Environment=LOG_LEVEL=info
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=prop-voter
+
+[Install]
+WantedBy=multi-user.target

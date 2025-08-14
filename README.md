@@ -572,6 +572,82 @@ docker-compose pull
 docker-compose up -d --force-recreate
 ```
 
+### SystemD Service Deployment
+
+For Linux systems using systemd, you can run Prop-Voter as a system service:
+
+1. **Create a dedicated user:**
+
+```bash
+sudo useradd --system --home /opt/prop-voter --create-home --shell /bin/false prop-voter
+```
+
+2. **Install the binary and configuration:**
+
+```bash
+sudo mkdir -p /opt/prop-voter/{bin,keys,logs,backups}
+sudo cp prop-voter /opt/prop-voter/
+sudo cp config.yaml /opt/prop-voter/
+sudo chown -R prop-voter:prop-voter /opt/prop-voter
+sudo chmod 755 /opt/prop-voter/prop-voter
+sudo chmod 600 /opt/prop-voter/config.yaml
+```
+
+3. **Install wallet keys:**
+
+Place your mnemonic files in the keys directory:
+
+```bash
+# Copy your key files (replace with your actual key files)
+sudo cp keys/*.mnemonic /opt/prop-voter/keys/
+# OR manually create them
+sudo nano /opt/prop-voter/keys/my-cosmos-key.mnemonic
+sudo nano /opt/prop-voter/keys/my-osmosis-key.mnemonic
+
+# Set secure permissions - only the prop-voter user can read
+sudo chown -R prop-voter:prop-voter /opt/prop-voter/keys
+sudo chmod 700 /opt/prop-voter/keys
+sudo chmod 600 /opt/prop-voter/keys/*.mnemonic
+```
+
+Your configuration in `/opt/prop-voter/config.yaml` should reference these keys:
+
+```yaml
+key_manager:
+  auto_import: true # Automatically import keys on startup
+  key_dir: "./keys" # Relative to /opt/prop-voter
+  backup_keys: true
+  encrypt_keys: true
+
+chains:
+  - name: "Cosmos Hub"
+    # ... other config ...
+    wallet_key: "my-cosmos-key" # Will look for /opt/prop-voter/keys/my-cosmos-key.mnemonic
+```
+
+4. **Install the service file:**
+
+```bash
+sudo cp prop-voter.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+5. **Enable and start the service:**
+
+```bash
+sudo systemctl enable prop-voter
+sudo systemctl start prop-voter
+```
+
+6. **Check service status:**
+
+```bash
+sudo systemctl status prop-voter
+sudo journalctl -u prop-voter -f
+```
+
+The service file includes security hardening options and will automatically restart the service if it fails.
+
 ### Kubernetes Deployment
 
 Create `k8s-deployment.yaml`:
