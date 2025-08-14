@@ -1,16 +1,16 @@
 [Unit]
 Description=Prop-Voter - Cosmos Governance Bot
-Documentation=https://github.com/your-org/prop-voter
+Documentation=https://github.com/chalabi2/prop-voter
 After=network-online.target
 Wants=network-online.target
 Requires=network.target
 
 [Service]
 Type=simple
-User=prop-voter
-Group=prop-voter
-WorkingDirectory=/opt/prop-voter
-ExecStart=/opt/prop-voter/prop-voter -config /opt/prop-voter/config.yaml
+User=YOUR_USERNAME
+Group=YOUR_GROUP
+WorkingDirectory=/path/to/your/prop-voter
+ExecStart=/path/to/your/prop-voter/prop-voter -config config.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
 Restart=always
@@ -18,23 +18,12 @@ RestartSec=5
 TimeoutStartSec=30
 TimeoutStopSec=10
 
-# Security settings
+# Basic security settings
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/prop-voter
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-MemoryDenyWriteExecute=true
-LockPersonality=true
 
 # Environment
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=HOME=/opt/prop-voter
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin
 Environment=LOG_LEVEL=info
 
 # Logging

@@ -574,79 +574,81 @@ docker-compose up -d --force-recreate
 
 ### SystemD Service Deployment
 
-For Linux systems using systemd, you can run Prop-Voter as a system service:
+For Linux systems using systemd, you can run Prop-Voter as a system service directly from your project directory:
 
-1. **Create a dedicated user:**
+1. **Prepare the service file:**
 
-```bash
-sudo useradd --system --home /opt/prop-voter --create-home --shell /bin/false prop-voter
-```
-
-2. **Install the binary and configuration:**
+Edit `prop-voter.service` to match your setup:
 
 ```bash
-sudo mkdir -p /opt/prop-voter/{bin,keys,logs,backups}
-sudo cp prop-voter /opt/prop-voter/
-sudo cp config.yaml /opt/prop-voter/
-sudo chown -R prop-voter:prop-voter /opt/prop-voter
-sudo chmod 755 /opt/prop-voter/prop-voter
-sudo chmod 600 /opt/prop-voter/config.yaml
+# Copy the service file template
+cp prop-voter.service prop-voter.service.local
+
+# Edit the service file
+nano prop-voter.service.local
 ```
 
-3. **Install wallet keys:**
+**Update these lines in the service file:**
 
-Place your mnemonic files in the keys directory:
+```ini
+User=YOUR_USERNAME              # Replace with your username (e.g., ubuntu, ec2-user, etc.)
+Group=YOUR_GROUP                # Replace with your group (usually same as username)
+WorkingDirectory=/path/to/your/prop-voter   # Replace with full path to your prop-voter directory
+ExecStart=/path/to/your/prop-voter/prop-voter -config config.yaml   # Full path to your binary
+```
+
+**Example for user 'ubuntu' in '/home/ubuntu/prop-voter':**
+
+```ini
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/prop-voter
+ExecStart=/home/ubuntu/prop-voter/prop-voter -config config.yaml
+```
+
+2. **Install the service file:**
 
 ```bash
-# Copy your key files (replace with your actual key files)
-sudo cp keys/*.mnemonic /opt/prop-voter/keys/
-# OR manually create them
-sudo nano /opt/prop-voter/keys/my-cosmos-key.mnemonic
-sudo nano /opt/prop-voter/keys/my-osmosis-key.mnemonic
-
-# Set secure permissions - only the prop-voter user can read
-sudo chown -R prop-voter:prop-voter /opt/prop-voter/keys
-sudo chmod 700 /opt/prop-voter/keys
-sudo chmod 600 /opt/prop-voter/keys/*.mnemonic
-```
-
-Your configuration in `/opt/prop-voter/config.yaml` should reference these keys:
-
-```yaml
-key_manager:
-  auto_import: true # Automatically import keys on startup
-  key_dir: "./keys" # Relative to /opt/prop-voter
-  backup_keys: true
-  encrypt_keys: true
-
-chains:
-  - name: "Cosmos Hub"
-    # ... other config ...
-    wallet_key: "my-cosmos-key" # Will look for /opt/prop-voter/keys/my-cosmos-key.mnemonic
-```
-
-4. **Install the service file:**
-
-```bash
-sudo cp prop-voter.service /etc/systemd/system/
+sudo cp prop-voter.service.local /etc/systemd/system/prop-voter.service
 sudo systemctl daemon-reload
 ```
 
-5. **Enable and start the service:**
+3. **Enable and start the service:**
 
 ```bash
 sudo systemctl enable prop-voter
 sudo systemctl start prop-voter
 ```
 
-6. **Check service status:**
+4. **Check service status:**
 
 ```bash
 sudo systemctl status prop-voter
 sudo journalctl -u prop-voter -f
 ```
 
-The service file includes security hardening options and will automatically restart the service if it fails.
+**Benefits of this approach:**
+
+- No need to create system users
+- No need to copy files around
+- Uses your existing keys and config in place
+- Easy to update - just restart the service after rebuilding
+- Simpler permissions management
+
+**Directory structure (running in place):**
+
+```
+/home/your-user/prop-voter/
+├── prop-voter              # Binary
+├── config.yaml             # Your configuration
+├── keys/                   # Your key files
+│   ├── my-cosmos-key.mnemonic
+│   └── my-osmosis-key.mnemonic
+├── bin/                    # Auto-downloaded CLI tools
+├── logs/                   # Application logs
+├── prop-voter.db          # SQLite database
+└── prop-voter.service     # Service file template
+```
 
 ### Kubernetes Deployment
 
