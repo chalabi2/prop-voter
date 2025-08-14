@@ -681,12 +681,28 @@ func (b *Bot) queryVoteTally(chainConfig *config.ChainConfig, proposalID string)
 	return nil, fmt.Errorf("failed to query vote tally using any API version")
 }
 
-// TallyResponse represents the raw tally data from the API
+// TallyResponse represents the normalized tally data
 type TallyResponse struct {
+	Yes        string
+	No         string
+	Abstain    string
+	NoWithVeto string
+}
+
+// TallyResponseV1 represents the v1 API tally format
+type TallyResponseV1 struct {
 	Yes        string `json:"yes_count"`
 	No         string `json:"no_count"`
 	Abstain    string `json:"abstain_count"`
 	NoWithVeto string `json:"no_with_veto_count"`
+}
+
+// TallyResponseV1Beta1 represents the v1beta1 API tally format
+type TallyResponseV1Beta1 struct {
+	Yes        string `json:"yes"`
+	No         string `json:"no"`
+	Abstain    string `json:"abstain"`
+	NoWithVeto string `json:"no_with_veto"`
 }
 
 // tryQueryTally attempts to query the tally using a specific API version
@@ -722,7 +738,7 @@ func (b *Bot) tryQueryTally(url, version string) (*TallyResponse, error) {
 	if version == "v1" {
 		// Gov v1 API format
 		var response struct {
-			Tally *TallyResponse `json:"tally"`
+			Tally *TallyResponseV1 `json:"tally"`
 		}
 		if err := json.Unmarshal(body, &response); err != nil {
 			return nil, fmt.Errorf("failed to decode v1 response: %w", err)
@@ -730,16 +746,30 @@ func (b *Bot) tryQueryTally(url, version string) (*TallyResponse, error) {
 		if response.Tally == nil {
 			return nil, fmt.Errorf("tally field is null in v1 response")
 		}
-		return response.Tally, nil
+
+		// Convert to normalized format
+		return &TallyResponse{
+			Yes:        response.Tally.Yes,
+			No:         response.Tally.No,
+			Abstain:    response.Tally.Abstain,
+			NoWithVeto: response.Tally.NoWithVeto,
+		}, nil
 	} else {
 		// Gov v1beta1 API format
 		var response struct {
-			Tally TallyResponse `json:"tally"`
+			Tally TallyResponseV1Beta1 `json:"tally"`
 		}
 		if err := json.Unmarshal(body, &response); err != nil {
 			return nil, fmt.Errorf("failed to decode v1beta1 response: %w", err)
 		}
-		return &response.Tally, nil
+
+		// Convert to normalized format
+		return &TallyResponse{
+			Yes:        response.Tally.Yes,
+			No:         response.Tally.No,
+			Abstain:    response.Tally.Abstain,
+			NoWithVeto: response.Tally.NoWithVeto,
+		}, nil
 	}
 }
 
