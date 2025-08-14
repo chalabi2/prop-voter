@@ -163,7 +163,7 @@ func (s *Scanner) fetchProposals(ctx context.Context, url string) ([]ProposalDat
 func (s *Scanner) processProposals(chain config.ChainConfig, proposals []ProposalData) error {
 	// Check if this is the first scan for this chain (no proposals exist yet)
 	var existingCount int64
-	s.db.Model(&models.Proposal{}).Where("chain_id = ?", chain.ChainID).Count(&existingCount)
+	s.db.Model(&models.Proposal{}).Where("chain_id = ?", chain.GetChainID()).Count(&existingCount)
 	isFirstScan := existingCount == 0
 
 	// Filter proposals to focus on relevant ones
@@ -178,7 +178,7 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 	for _, proposal := range relevantProposals {
 		// Check if proposal already exists
 		var existing models.Proposal
-		result := s.db.Where("chain_id = ? AND proposal_id = ?", chain.ChainID, proposal.ProposalID).First(&existing)
+		result := s.db.Where("chain_id = ? AND proposal_id = ?", chain.GetChainID(), proposal.ProposalID).First(&existing)
 
 		if result.Error == gorm.ErrRecordNotFound {
 			// New proposal, create it
@@ -260,7 +260,7 @@ func (s *Scanner) filterRelevantProposals(proposals []ProposalData) []ProposalDa
 // convertToModel converts API proposal data to database model
 func (s *Scanner) convertToModel(chain config.ChainConfig, proposal ProposalData) models.Proposal {
 	model := models.Proposal{
-		ChainID:     chain.ChainID,
+		ChainID:     chain.GetChainID(),
 		ProposalID:  proposal.ProposalID,
 		Title:       proposal.Content.Title,
 		Description: proposal.Content.Description,

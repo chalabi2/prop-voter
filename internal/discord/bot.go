@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -337,14 +338,31 @@ func (b *Bot) handleNotifications(ctx context.Context) {
 
 // sendProposalNotification sends a notification about a new proposal
 func (b *Bot) sendProposalNotification(proposal models.Proposal) {
+	b.logger.Debug("Sending proposal notification",
+		zap.String("chain_id", proposal.ChainID),
+		zap.String("proposal_id", proposal.ProposalID),
+		zap.String("title", proposal.Title),
+	)
+
 	// Find the chain config to get the logo and metadata
 	var chainConfig *config.ChainConfig
 	for i, chain := range b.config.Chains {
 		// Use GetChainID() to support both legacy and Chain Registry formats
 		if chain.GetChainID() == proposal.ChainID {
 			chainConfig = &b.config.Chains[i]
+			b.logger.Debug("Found matching chain config",
+				zap.String("chain_name", chain.GetName()),
+				zap.String("chain_id", chain.GetChainID()),
+			)
 			break
 		}
+	}
+
+	if chainConfig == nil {
+		b.logger.Warn("No chain config found for proposal",
+			zap.String("proposal_chain_id", proposal.ChainID),
+			zap.String("proposal_id", proposal.ProposalID),
+		)
 	}
 
 	// Determine chain name and logo (works for both legacy and Chain Registry)
@@ -379,7 +397,7 @@ func (b *Bot) sendProposalNotification(proposal models.Proposal) {
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: fmt.Sprintf("Use: !vote %s %s <yes/no/abstain/no_with_veto> <secret>", proposal.ChainID, proposal.ProposalID),
+			Text: fmt.Sprintf("Vote: !vote %s %s <yes/no/abstain/no_with_veto> <secret> • Chain: %s", proposal.ChainID, proposal.ProposalID, chainName),
 		},
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
@@ -609,17 +627,57 @@ type VoteTally struct {
 
 // queryVoteTally queries the chain for vote tally results
 func (b *Bot) queryVoteTally(chainConfig *config.ChainConfig, proposalID string) (*VoteTally, error) {
-	// Construct REST API URL for vote tally
-	// Using the governance v1beta1 API endpoint
-	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals/%s/tally",
-		strings.TrimSuffix(chainConfig.REST, "/"), proposalID)
+	baseURL := strings.TrimSuffix(chainConfig.REST, "/")
 
-	b.logger.Info("Querying vote tally",
-		zap.String("chain", chainConfig.GetName()),
-		zap.String("proposal", proposalID),
-		zap.String("url", url),
-	)
+	// Try different API versions - newer chains might use v1, older ones v1beta1
+	apiVersions := []string{"v1", "v1beta1"}
 
+	for _, version := range apiVersions {
+		url := fmt.Sprintf("%s/cosmos/gov/%s/proposals/%s/tally", baseURL, version, proposalID)
+
+		b.logger.Info("Querying vote tally",
+			zap.String("chain", chainConfig.GetName()),
+			zap.String("proposal", proposalID),
+			zap.String("api_version", version),
+			zap.String("url", url),
+		)
+
+		tally, err := b.tryQueryTally(url, version)
+		if err != nil {
+			b.logger.Debug("API version failed, trying next",
+				zap.String("version", version),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		b.logger.Info("Successfully retrieved vote tally",
+			zap.String("chain", chainConfig.GetName()),
+			zap.String("api_version", version),
+		)
+
+		// Convert raw amounts to human-readable format
+		return &VoteTally{
+			Yes:        b.formatTokenAmount(tally.Yes, chainConfig),
+			No:         b.formatTokenAmount(tally.No, chainConfig),
+			Abstain:    b.formatTokenAmount(tally.Abstain, chainConfig),
+			NoWithVeto: b.formatTokenAmount(tally.NoWithVeto, chainConfig),
+		}, nil
+	}
+
+	return nil, fmt.Errorf("failed to query vote tally using any API version")
+}
+
+// TallyResponse represents the raw tally data from the API
+type TallyResponse struct {
+	Yes        string `json:"yes"`
+	No         string `json:"no"`
+	Abstain    string `json:"abstain"`
+	NoWithVeto string `json:"no_with_veto"`
+}
+
+// tryQueryTally attempts to query the tally using a specific API version
+func (b *Bot) tryQueryTally(url, version string) (*TallyResponse, error) {
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -627,7 +685,7 @@ func (b *Bot) queryVoteTally(chainConfig *config.ChainConfig, proposalID string)
 
 	resp, err := client.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query tally: %w", err)
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -635,27 +693,41 @@ func (b *Bot) queryVoteTally(chainConfig *config.ChainConfig, proposalID string)
 		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
 
-	// Parse the response
-	var response struct {
-		Tally struct {
-			Yes        string `json:"yes"`
-			No         string `json:"no"`
-			Abstain    string `json:"abstain"`
-			NoWithVeto string `json:"no_with_veto"`
-		} `json:"tally"`
+	// Read response body for debugging
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
+	b.logger.Debug("API response received",
+		zap.String("api_version", version),
+		zap.Int("status_code", resp.StatusCode),
+		zap.String("response_body", string(body)),
+	)
 
-	// Convert raw amounts to human-readable format
-	return &VoteTally{
-		Yes:        b.formatTokenAmount(response.Tally.Yes, chainConfig),
-		No:         b.formatTokenAmount(response.Tally.No, chainConfig),
-		Abstain:    b.formatTokenAmount(response.Tally.Abstain, chainConfig),
-		NoWithVeto: b.formatTokenAmount(response.Tally.NoWithVeto, chainConfig),
-	}, nil
+	// Parse based on API version
+	if version == "v1" {
+		// Gov v1 API format
+		var response struct {
+			Tally *TallyResponse `json:"tally"`
+		}
+		if err := json.Unmarshal(body, &response); err != nil {
+			return nil, fmt.Errorf("failed to decode v1 response: %w", err)
+		}
+		if response.Tally == nil {
+			return nil, fmt.Errorf("tally field is null in v1 response")
+		}
+		return response.Tally, nil
+	} else {
+		// Gov v1beta1 API format
+		var response struct {
+			Tally TallyResponse `json:"tally"`
+		}
+		if err := json.Unmarshal(body, &response); err != nil {
+			return nil, fmt.Errorf("failed to decode v1beta1 response: %w", err)
+		}
+		return &response.Tally, nil
+	}
 }
 
 // formatTokenAmount converts raw token amounts to human-readable format
