@@ -152,11 +152,6 @@ func (c *Client) GetChainInfo(ctx context.Context, chainName string) (*ChainInfo
 
 // GetBinaryInfo extracts binary download information
 func (c *Client) GetBinaryInfo(chainInfo *ChainInfo) (*BinaryInfo, error) {
-	if chainInfo.BinaryURL == "" {
-		return nil, fmt.Errorf("no binary URL available for %s on %s/%s",
-			chainInfo.ChainName, runtime.GOOS, runtime.GOARCH)
-	}
-
 	// Extract repository info from git URL
 	gitRepo := chainInfo.GitRepo
 	if gitRepo == "" {
@@ -172,13 +167,25 @@ func (c *Client) GetBinaryInfo(chainInfo *ChainInfo) (*BinaryInfo, error) {
 	owner := parts[len(parts)-2]
 	repo := parts[len(parts)-1]
 
-	return &BinaryInfo{
+	binaryInfo := &BinaryInfo{
 		Owner:     owner,
 		Repo:      repo,
 		Version:   chainInfo.Version,
 		BinaryURL: chainInfo.BinaryURL,
 		FileName:  chainInfo.DaemonName,
-	}, nil
+	}
+
+	// If no binary URL provided by Chain Registry, mark for GitHub fallback
+	if chainInfo.BinaryURL == "" {
+		c.logger.Debug("No binary URL in Chain Registry, will use GitHub releases fallback",
+			zap.String("chain", chainInfo.ChainName),
+			zap.String("repo", owner+"/"+repo),
+			zap.String("version", chainInfo.Version),
+		)
+		binaryInfo.BinaryURL = "" // Will trigger GitHub releases lookup in binary manager
+	}
+
+	return binaryInfo, nil
 }
 
 // BinaryInfo contains binary download information

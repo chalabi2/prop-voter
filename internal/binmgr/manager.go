@@ -149,18 +149,60 @@ func (m *Manager) checkForUpdates(ctx context.Context) error {
 			continue
 		}
 
-		// For Chain Registry, we use direct binary URL (always latest)
-		// For legacy format, check GitHub releases
+		// For Chain Registry chains
 		if chain.UsesChainRegistry() {
-			// Chain Registry provides direct binary URLs, assume they're always latest
-			binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
-			if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-				m.logger.Info("Binary missing, downloading from Chain Registry",
+			if binaryInfo.BinaryURL != "" {
+				// Chain Registry provides direct binary URL
+				binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
+
+				// Check if we need to update to a newer version
+				needsUpdate := false
+				if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+					needsUpdate = true
+					m.logger.Info("Binary missing, downloading from Chain Registry",
+						zap.String("chain", chain.GetName()),
+						zap.String("version", binaryInfo.Version),
+					)
+				} else {
+					// Check if current version differs from registry version
+					currentVersion, err := m.getCurrentVersion(binaryPath)
+					if err != nil || currentVersion != binaryInfo.Version {
+						needsUpdate = true
+						m.logger.Info("Version mismatch, updating from Chain Registry",
+							zap.String("chain", chain.GetName()),
+							zap.String("current", currentVersion),
+							zap.String("registry", binaryInfo.Version),
+						)
+					}
+				}
+
+				if needsUpdate {
+					if err := m.downloadBinaryFromURL(ctx, &chain, binaryInfo.BinaryURL, binaryInfo.Version); err != nil {
+						m.logger.Error("Failed to download binary from Chain Registry",
+							zap.String("chain", chain.GetName()),
+							zap.Error(err),
+						)
+					}
+				}
+			} else {
+				// Chain Registry chain but no binary URL - fall back to GitHub releases
+				m.logger.Info("Chain Registry chain with no binary URL, falling back to GitHub releases",
 					zap.String("chain", chain.GetName()),
-					zap.String("version", binaryInfo.Version),
+					zap.String("repo", binaryInfo.Owner+"/"+binaryInfo.Repo),
+					zap.String("registry_version", binaryInfo.Version),
 				)
-				if err := m.downloadBinaryFromURL(ctx, &chain, binaryInfo.BinaryURL, binaryInfo.Version); err != nil {
-					m.logger.Error("Failed to download binary",
+
+				// Convert to legacy-style repo config for GitHub API
+				legacyRepo := config.BinaryRepo{
+					Enabled:      true,
+					Owner:        binaryInfo.Owner,
+					Repo:         binaryInfo.Repo,
+					AssetPattern: fmt.Sprintf("*%s_%s*", runtime.GOOS, runtime.GOARCH), // e.g., *linux_amd64*
+				}
+
+				// Use GitHub releases logic
+				if err := m.handleGitHubRelease(ctx, &chain, legacyRepo, binaryInfo.Version); err != nil {
+					m.logger.Error("Failed to handle GitHub release for Chain Registry chain",
 						zap.String("chain", chain.GetName()),
 						zap.Error(err),
 					)
@@ -170,44 +212,85 @@ func (m *Manager) checkForUpdates(ctx context.Context) error {
 		}
 
 		// Legacy format: check GitHub releases
-		release, err := m.getLatestRelease(ctx, chain.BinaryRepo)
-		if err != nil {
-			m.logger.Error("Failed to get latest release",
+		if err := m.handleGitHubRelease(ctx, &chain, chain.BinaryRepo, ""); err != nil {
+			m.logger.Error("Failed to handle GitHub release for legacy chain",
 				zap.String("chain", chain.GetName()),
 				zap.Error(err),
 			)
-			continue
-		}
-
-		// Check if we need to update
-		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
-		currentVersion, err := m.getCurrentVersion(binaryPath)
-		if err != nil {
-			m.logger.Debug("Could not determine current version",
-				zap.String("chain", chain.GetName()),
-				zap.Error(err),
-			)
-		}
-
-		if currentVersion != release.TagName {
-			m.logger.Info("Update available",
-				zap.String("chain", chain.GetName()),
-				zap.String("current", currentVersion),
-				zap.String("latest", release.TagName),
-			)
-
-			if m.config.BinaryManager.AutoUpdate {
-				if err := m.downloadBinaryFromRelease(ctx, &chain, release); err != nil {
-					m.logger.Error("Failed to update binary",
-						zap.String("chain", chain.GetName()),
-						zap.Error(err),
-					)
-				}
-			}
 		}
 	}
 
 	return nil
+}
+
+// handleGitHubRelease handles binary management using GitHub releases API
+// Works for both Chain Registry chains (fallback) and legacy chains
+func (m *Manager) handleGitHubRelease(ctx context.Context, chain *config.ChainConfig, repo config.BinaryRepo, registryVersion string) error {
+	// Get latest release from GitHub
+	release, err := m.getLatestRelease(ctx, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get latest release: %w", err)
+	}
+
+	binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
+
+	// Determine target version
+	targetVersion := release.TagName
+	if registryVersion != "" {
+		// For Chain Registry chains, prefer registry version if it matches a release
+		targetVersion = registryVersion
+		m.logger.Info("Using Chain Registry recommended version",
+			zap.String("chain", chain.GetName()),
+			zap.String("registry_version", registryVersion),
+			zap.String("latest_release", release.TagName),
+		)
+	}
+
+	// Check current version
+	currentVersion, err := m.getCurrentVersion(binaryPath)
+	needsUpdate := false
+
+	if err != nil || !fileExists(binaryPath) {
+		needsUpdate = true
+		m.logger.Info("Binary missing, downloading from GitHub",
+			zap.String("chain", chain.GetName()),
+			zap.String("version", targetVersion),
+		)
+	} else if currentVersion != targetVersion {
+		needsUpdate = true
+		m.logger.Info("Update available from GitHub",
+			zap.String("chain", chain.GetName()),
+			zap.String("current", currentVersion),
+			zap.String("target", targetVersion),
+		)
+	}
+
+	// Download if needed
+	if needsUpdate && (m.config.BinaryManager.AutoUpdate || !fileExists(binaryPath)) {
+		// For Chain Registry chains with specific version, try to find that release
+		if registryVersion != "" && registryVersion != release.TagName {
+			specificRelease, err := m.getSpecificRelease(ctx, repo, registryVersion)
+			if err != nil {
+				m.logger.Warn("Registry version not found in releases, using latest",
+					zap.String("chain", chain.GetName()),
+					zap.String("registry_version", registryVersion),
+					zap.String("latest", release.TagName),
+				)
+			} else {
+				release = specificRelease
+			}
+		}
+
+		return m.downloadBinaryFromRelease(ctx, chain, release)
+	}
+
+	return nil
+}
+
+// fileExists checks if a file exists
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // downloadLatestBinary downloads the latest binary for a chain
@@ -284,7 +367,7 @@ func (m *Manager) downloadBinaryFromRelease(ctx context.Context, chain *config.C
 	}
 
 	m.logger.Info("Downloading binary",
-		zap.String("chain", chain.Name),
+		zap.String("chain", chain.GetName()),
 		zap.String("version", release.TagName),
 		zap.String("asset", asset.Name),
 		zap.Int64("size", asset.Size),
@@ -322,7 +405,7 @@ func (m *Manager) downloadBinaryFromRelease(ctx context.Context, chain *config.C
 	tmpFile.Close()
 
 	// Extract and install the binary
-	binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.CLIName)
+	binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
 
 	// Backup old binary if it exists and backup is enabled
 	if m.config.BinaryManager.BackupOld {
@@ -336,7 +419,7 @@ func (m *Manager) downloadBinaryFromRelease(ctx context.Context, chain *config.C
 		}
 	}
 
-	if err := m.extractBinary(tmpFile.Name(), binaryPath, chain.CLIName, asset.Name); err != nil {
+	if err := m.extractBinary(tmpFile.Name(), binaryPath, chain.GetCLIName(), asset.Name); err != nil {
 		return fmt.Errorf("failed to extract binary: %w", err)
 	}
 
@@ -346,7 +429,7 @@ func (m *Manager) downloadBinaryFromRelease(ctx context.Context, chain *config.C
 	}
 
 	m.logger.Info("Binary updated successfully",
-		zap.String("chain", chain.Name),
+		zap.String("chain", chain.GetName()),
 		zap.String("version", release.TagName),
 		zap.String("path", binaryPath),
 	)
@@ -368,6 +451,42 @@ func (m *Manager) getLatestRelease(ctx context.Context, repo config.BinaryRepo) 
 		return nil, fmt.Errorf("failed to fetch releases: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &release, nil
+}
+
+// getSpecificRelease gets a specific release version from GitHub
+func (m *Manager) getSpecificRelease(ctx context.Context, repo config.BinaryRepo, version string) (*GitHubRelease, error) {
+	// Ensure version starts with 'v' if it doesn't already
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/tags/%s", repo.Owner, repo.Repo, version)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch release %s: %w", version, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("release %s not found", version)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)

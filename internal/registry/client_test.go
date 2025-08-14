@@ -257,23 +257,38 @@ func TestGetBinaryInfo_NoBinaryURL(t *testing.T) {
 		ChainName:  "osmosis",
 		GitRepo:    "https://github.com/osmosis-labs/osmosis/",
 		Version:    "v15.0.0",
-		BinaryURL:  "", // No binary URL
+		BinaryURL:  "", // No binary URL - should trigger GitHub fallback
 		DaemonName: "osmosisd",
 	}
 
 	logger := zaptest.NewLogger(t)
 	client := NewClient(logger)
 
-	_, err := client.GetBinaryInfo(chainInfo)
+	binaryInfo, err := client.GetBinaryInfo(chainInfo)
 
-	if err == nil {
-		t.Error("Expected error when no binary URL available")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// Error message is platform-dependent, so just check it contains the expected parts
-	errorStr := err.Error()
-	if !strings.Contains(errorStr, "no binary URL available for osmosis on") {
-		t.Errorf("Expected error to contain 'no binary URL available for osmosis on', got '%s'", errorStr)
+	// Should return BinaryInfo with empty BinaryURL for GitHub fallback
+	if binaryInfo.BinaryURL != "" {
+		t.Errorf("Expected empty binary URL for GitHub fallback, got '%s'", binaryInfo.BinaryURL)
+	}
+
+	if binaryInfo.Owner != "osmosis-labs" {
+		t.Errorf("Expected owner 'osmosis-labs', got '%s'", binaryInfo.Owner)
+	}
+
+	if binaryInfo.Repo != "osmosis" {
+		t.Errorf("Expected repo 'osmosis', got '%s'", binaryInfo.Repo)
+	}
+
+	if binaryInfo.FileName != "osmosisd" {
+		t.Errorf("Expected filename 'osmosisd', got '%s'", binaryInfo.FileName)
+	}
+
+	if binaryInfo.Version != "v15.0.0" {
+		t.Errorf("Expected version 'v15.0.0', got '%s'", binaryInfo.Version)
 	}
 }
 

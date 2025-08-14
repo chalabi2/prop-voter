@@ -2,7 +2,10 @@ package discord
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,8 +44,9 @@ func NewBot(db *gorm.DB, config *config.Config, logger *zap.Logger, voter *votin
 		notifyChan: make(chan models.Proposal, 100),
 	}
 
-	// Register message handler
+	// Register message and interaction handlers
 	session.AddHandler(bot.messageHandler)
+	session.AddHandler(bot.interactionHandler)
 
 	return bot, nil
 }
@@ -333,13 +337,24 @@ func (b *Bot) handleNotifications(ctx context.Context) {
 
 // sendProposalNotification sends a notification about a new proposal
 func (b *Bot) sendProposalNotification(proposal models.Proposal) {
-	// Find the chain config to get the logo
+	// Find the chain config to get the logo and metadata
 	var chainConfig *config.ChainConfig
-	for _, chain := range b.config.Chains {
-		if chain.ChainID == proposal.ChainID {
-			chainConfig = &chain
+	for i, chain := range b.config.Chains {
+		// Use GetChainID() to support both legacy and Chain Registry formats
+		if chain.GetChainID() == proposal.ChainID {
+			chainConfig = &b.config.Chains[i]
 			break
 		}
+	}
+
+	// Determine chain name and logo (works for both legacy and Chain Registry)
+	chainName := proposal.ChainID // Fallback to chain ID
+	chainLogoURL := ""
+
+	if chainConfig != nil {
+		// Get chain name and logo using helper methods
+		chainName = chainConfig.GetName()
+		chainLogoURL = chainConfig.GetLogoURL()
 	}
 
 	// Create rich embed
@@ -354,7 +369,7 @@ func (b *Bot) sendProposalNotification(proposal models.Proposal) {
 			},
 			{
 				Name:   "⛓️ Chain",
-				Value:  fmt.Sprintf("`%s`", proposal.ChainID),
+				Value:  fmt.Sprintf("**%s** (`%s`)", chainName, proposal.ChainID),
 				Inline: true,
 			},
 			{
@@ -369,16 +384,14 @@ func (b *Bot) sendProposalNotification(proposal models.Proposal) {
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
-	// Add chain logo if available
-	if chainConfig != nil && chainConfig.LogoURL != "" {
+	// Add chain logo and author info
+	if chainLogoURL != "" {
 		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{
-			URL: chainConfig.LogoURL,
+			URL: chainLogoURL,
 		}
-		if chainConfig.Name != "" {
-			embed.Author = &discordgo.MessageEmbedAuthor{
-				Name:    chainConfig.Name,
-				IconURL: chainConfig.LogoURL,
-			}
+		embed.Author = &discordgo.MessageEmbedAuthor{
+			Name:    chainName,
+			IconURL: chainLogoURL,
 		}
 	}
 
@@ -404,7 +417,8 @@ func (b *Bot) sendProposalNotification(proposal models.Proposal) {
 		})
 	}
 
-	b.sendEmbed(b.config.Discord.ChannelID, embed)
+	// Send embed with interactive vote tally button
+	b.sendEmbedWithButtons(b.config.Discord.ChannelID, embed, proposal)
 
 	// Mark notification as sent
 	proposal.NotificationSent = true
@@ -455,5 +469,241 @@ func (b *Bot) sendEmbed(channelID string, embed *discordgo.MessageEmbed) {
 			zap.String("channel", channelID),
 			zap.Error(err),
 		)
+	}
+}
+
+// sendEmbedWithButtons sends a Discord embed with interactive buttons
+func (b *Bot) sendEmbedWithButtons(channelID string, embed *discordgo.MessageEmbed, proposal models.Proposal) {
+	// Create vote tally button
+	components := []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.Button{
+					Label:    "📊 Check Vote Tally",
+					Style:    discordgo.SecondaryButton,
+					CustomID: fmt.Sprintf("vote_tally_%s_%s", proposal.ChainID, proposal.ProposalID),
+					Emoji: discordgo.ComponentEmoji{
+						Name: "📊",
+					},
+				},
+			},
+		},
+	}
+
+	data := &discordgo.MessageSend{
+		Embed:      embed,
+		Components: components,
+	}
+
+	_, err := b.session.ChannelMessageSendComplex(channelID, data)
+	if err != nil {
+		b.logger.Error("Failed to send embed with buttons",
+			zap.String("channel", channelID),
+			zap.Error(err),
+		)
+	}
+}
+
+// interactionHandler handles Discord button interactions
+func (b *Bot) interactionHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Only handle button interactions
+	if i.Type != discordgo.InteractionMessageComponent {
+		return
+	}
+
+	// Check if this is a vote tally button
+	if strings.HasPrefix(i.MessageComponentData().CustomID, "vote_tally_") {
+		b.handleVoteTallyButton(s, i)
+	}
+}
+
+// handleVoteTallyButton handles vote tally button clicks
+func (b *Bot) handleVoteTallyButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Extract chain ID and proposal ID from custom ID
+	parts := strings.Split(i.MessageComponentData().CustomID, "_")
+	if len(parts) < 4 {
+		b.respondWithError(s, i, "Invalid button data")
+		return
+	}
+
+	chainID := parts[2]
+	proposalID := parts[3]
+
+	// Find the chain config
+	var chainConfig *config.ChainConfig
+	for idx, chain := range b.config.Chains {
+		if chain.GetChainID() == chainID {
+			chainConfig = &b.config.Chains[idx]
+			break
+		}
+	}
+
+	if chainConfig == nil {
+		b.respondWithError(s, i, fmt.Sprintf("Chain configuration not found for %s", chainID))
+		return
+	}
+
+	// Defer the response to give us time to query the chain
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		b.logger.Error("Failed to defer interaction response", zap.Error(err))
+		return
+	}
+
+	// Query the vote tally
+	tally, err := b.queryVoteTally(chainConfig, proposalID)
+	if err != nil {
+		b.followupWithError(s, i, fmt.Sprintf("Failed to query vote tally: %v", err))
+		return
+	}
+
+	// Create response embed
+	embed := &discordgo.MessageEmbed{
+		Title: fmt.Sprintf("📊 Vote Tally - Proposal #%s", proposalID),
+		Color: 0x3498db, // Blue color
+		Fields: []*discordgo.MessageEmbedField{
+			{
+				Name:   "✅ Yes",
+				Value:  tally.Yes,
+				Inline: true,
+			},
+			{
+				Name:   "❌ No",
+				Value:  tally.No,
+				Inline: true,
+			},
+			{
+				Name:   "🤷 Abstain",
+				Value:  tally.Abstain,
+				Inline: true,
+			},
+			{
+				Name:   "🚫 No with Veto",
+				Value:  tally.NoWithVeto,
+				Inline: true,
+			},
+		},
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: fmt.Sprintf("Chain: %s • Updated: %s", chainConfig.GetName(), time.Now().Format("15:04:05")),
+		},
+	}
+
+	// Send the follow-up response
+	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Embeds: []*discordgo.MessageEmbed{embed},
+	})
+	if err != nil {
+		b.logger.Error("Failed to send vote tally response", zap.Error(err))
+	}
+}
+
+// VoteTally represents vote tally results
+type VoteTally struct {
+	Yes        string `json:"yes"`
+	No         string `json:"no"`
+	Abstain    string `json:"abstain"`
+	NoWithVeto string `json:"no_with_veto"`
+}
+
+// queryVoteTally queries the chain for vote tally results
+func (b *Bot) queryVoteTally(chainConfig *config.ChainConfig, proposalID string) (*VoteTally, error) {
+	// Construct REST API URL for vote tally
+	// Using the governance v1beta1 API endpoint
+	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals/%s/tally",
+		strings.TrimSuffix(chainConfig.REST, "/"), proposalID)
+
+	b.logger.Info("Querying vote tally",
+		zap.String("chain", chainConfig.GetName()),
+		zap.String("proposal", proposalID),
+		zap.String("url", url),
+	)
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tally: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	// Parse the response
+	var response struct {
+		Tally struct {
+			Yes        string `json:"yes"`
+			No         string `json:"no"`
+			Abstain    string `json:"abstain"`
+			NoWithVeto string `json:"no_with_veto"`
+		} `json:"tally"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Convert raw amounts to human-readable format
+	return &VoteTally{
+		Yes:        b.formatTokenAmount(response.Tally.Yes, chainConfig),
+		No:         b.formatTokenAmount(response.Tally.No, chainConfig),
+		Abstain:    b.formatTokenAmount(response.Tally.Abstain, chainConfig),
+		NoWithVeto: b.formatTokenAmount(response.Tally.NoWithVeto, chainConfig),
+	}, nil
+}
+
+// formatTokenAmount converts raw token amounts to human-readable format
+func (b *Bot) formatTokenAmount(amount string, chainConfig *config.ChainConfig) string {
+	if amount == "" || amount == "0" {
+		return "0"
+	}
+
+	// Convert string to float for formatting
+	if value, err := strconv.ParseFloat(amount, 64); err == nil {
+		// Convert from base units (usually 6 decimals) to main units
+		value = value / 1000000
+
+		// Format with appropriate precision
+		if value >= 1000000 {
+			return fmt.Sprintf("%.2fM", value/1000000)
+		} else if value >= 1000 {
+			return fmt.Sprintf("%.2fK", value/1000)
+		} else {
+			return fmt.Sprintf("%.2f", value)
+		}
+	}
+
+	// Fallback to raw amount if parsing fails
+	return amount
+}
+
+// respondWithError sends an error response to an interaction
+func (b *Bot) respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: fmt.Sprintf("❌ %s", message),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+	if err != nil {
+		b.logger.Error("Failed to send error response", zap.Error(err))
+	}
+}
+
+// followupWithError sends an error follow-up message
+func (b *Bot) followupWithError(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
+	_, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Content: fmt.Sprintf("❌ %s", message),
+		Flags:   discordgo.MessageFlagsEphemeral,
+	})
+	if err != nil {
+		b.logger.Error("Failed to send error follow-up", zap.Error(err))
 	}
 }
