@@ -25,7 +25,14 @@ type Scanner struct {
 
 // GovernanceResponse represents the REST API response for governance proposals
 type GovernanceResponse struct {
-	Proposals []ProposalData `json:"proposals"`
+	Proposals  []ProposalData `json:"proposals"`
+	Pagination PaginationInfo `json:"pagination,omitempty"`
+}
+
+// PaginationInfo represents pagination information from the API
+type PaginationInfo struct {
+	NextKey string `json:"next_key,omitempty"`
+	Total   string `json:"total,omitempty"`
 }
 
 // ProposalData represents a single proposal from the REST API
@@ -100,7 +107,10 @@ func (s *Scanner) scanAllChains(ctx context.Context) {
 func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error {
 	s.logger.Debug("Scanning chain for proposals", zap.String("chain", chain.Name))
 
-	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals", chain.REST)
+	// Only fetch recent proposals with pagination and filter for active ones
+	// This prevents API overload and compatibility issues
+	// We fetch 25 recent proposals (newest first) which should cover any active governance
+	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals?pagination.limit=25&pagination.reverse=true", chain.REST)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -127,6 +137,11 @@ func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error
 		return fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
+	s.logger.Debug("Fetched proposals with pagination",
+		zap.String("chain", chain.Name),
+		zap.Int("proposal_count", len(govResp.Proposals)),
+	)
+
 	return s.processProposals(chain, govResp.Proposals)
 }
 
@@ -137,7 +152,16 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 	s.db.Model(&models.Proposal{}).Where("chain_id = ?", chain.ChainID).Count(&existingCount)
 	isFirstScan := existingCount == 0
 
-	for _, proposal := range proposals {
+	// Filter proposals to focus on relevant ones
+	relevantProposals := s.filterRelevantProposals(proposals)
+
+	s.logger.Debug("Processing proposals",
+		zap.String("chain", chain.Name),
+		zap.Int("total_fetched", len(proposals)),
+		zap.Int("relevant_proposals", len(relevantProposals)),
+	)
+
+	for _, proposal := range relevantProposals {
 		// Check if proposal already exists
 		var existing models.Proposal
 		result := s.db.Where("chain_id = ? AND proposal_id = ?", chain.ChainID, proposal.ProposalID).First(&existing)
@@ -194,6 +218,29 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 	}
 
 	return nil
+}
+
+// filterRelevantProposals filters proposals to focus on active and recent ones
+func (s *Scanner) filterRelevantProposals(proposals []ProposalData) []ProposalData {
+	var relevant []ProposalData
+
+	for _, proposal := range proposals {
+		// Include proposals that are:
+		// 1. In voting period (PROPOSAL_STATUS_VOTING_PERIOD)
+		// 2. In deposit period (PROPOSAL_STATUS_DEPOSIT_PERIOD)
+		// 3. Recently passed/rejected (for final status tracking)
+		switch proposal.Status {
+		case "PROPOSAL_STATUS_VOTING_PERIOD",
+			"PROPOSAL_STATUS_DEPOSIT_PERIOD",
+			"PROPOSAL_STATUS_PASSED",
+			"PROPOSAL_STATUS_REJECTED",
+			"PROPOSAL_STATUS_FAILED":
+			relevant = append(relevant, proposal)
+		}
+		// Skip historical proposals that are no longer relevant
+	}
+
+	return relevant
 }
 
 // convertToModel converts API proposal data to database model

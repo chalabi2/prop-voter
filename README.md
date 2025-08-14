@@ -773,8 +773,9 @@ spec:
    - Verify the bot is online (green status in Discord)
 
 4. **RPC/REST endpoints**:
-   - Test endpoints manually: `curl <rest-endpoint>/cosmos/gov/v1beta1/proposals`
+   - Test endpoints manually: `curl <rest-endpoint>/cosmos/gov/v1beta1/proposals?pagination.limit=1`
    - Try alternative public endpoints if needed
+   - The scanner uses pagination to fetch only recent proposals
 
 ### Binary Issues
 
@@ -808,6 +809,7 @@ gaiad keys show my-key --address
 2. **Key Import Fails**: Verify mnemonic format and chain CLI compatibility
 3. **Permission Errors**: Ensure proper file permissions on bin and key directories
 4. **Network Issues**: Check GitHub API access and rate limits
+5. **Governance API Errors**: The scanner fetches only the 25 most recent proposals to prevent API overload and compatibility issues with chains that have upgraded governance modules
 
 ### Logs
 
