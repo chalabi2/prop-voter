@@ -107,17 +107,17 @@ func (b *Bot) messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	command := strings.ToLower(parts[0])
 
 	switch command {
-	case "!help":
+	case "!prop-help", "!phelp":
 		b.sendHelp(m.ChannelID)
-	case "!proposals":
+	case "!prop-proposals", "!pproposals":
 		b.listProposals(m.ChannelID, parts[1:])
-	case "!vote":
+	case "!prop-vote", "!pvote":
 		b.handleVoteCommand(m.ChannelID, parts[1:])
-	case "!status":
+	case "!prop-status", "!pstatus":
 		b.showStatus(m.ChannelID, parts[1:])
 	default:
-		if strings.HasPrefix(content, "!") {
-			b.sendMessage(m.ChannelID, "Unknown command. Type `!help` for available commands.")
+		if strings.HasPrefix(content, "!prop-") || strings.HasPrefix(content, "!p") {
+			b.sendMessage(m.ChannelID, "Unknown prop-voter command. Type `!prop-help` for available commands.")
 		}
 	}
 }
@@ -126,17 +126,17 @@ func (b *Bot) messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 func (b *Bot) sendHelp(channelID string) {
 	help := `**Prop-Voter Bot Commands:**
 
-` + "`" + `!help` + "`" + ` - Show this help message
-` + "`" + `!proposals [chain]` + "`" + ` - List recent proposals (optionally filter by chain)
-` + "`" + `!vote <chain> <proposal_id> <vote> <secret>` + "`" + ` - Vote on a proposal
+` + "`" + `!prop-help` + "`" + ` (or ` + "`" + `!phelp` + "`" + `) - Show this help message
+` + "`" + `!prop-proposals [chain]` + "`" + ` (or ` + "`" + `!pproposals` + "`" + `) - List recent proposals (optionally filter by chain)
+` + "`" + `!prop-vote <chain> <proposal_id> <vote> <secret>` + "`" + ` (or ` + "`" + `!pvote` + "`" + `) - Vote on a proposal
   - vote options: yes, no, abstain, no_with_veto
   - secret: your configured vote secret
-` + "`" + `!status [chain] [proposal_id]` + "`" + ` - Show voting status
+` + "`" + `!prop-status [chain] [proposal_id]` + "`" + ` (or ` + "`" + `!pstatus` + "`" + `) - Show voting status
 
 **Examples:**
-` + "`" + `!proposals cosmoshub-4` + "`" + `
-` + "`" + `!vote cosmoshub-4 123 yes mysecret` + "`" + `
-` + "`" + `!status cosmoshub-4 123` + "`" + ``
+` + "`" + `!pproposals cosmoshub-4` + "`" + `
+` + "`" + `!pvote cosmoshub-4 123 yes mysecret` + "`" + `
+` + "`" + `!pstatus cosmoshub-4 123` + "`" + ``
 
 	b.sendMessage(channelID, help)
 }
@@ -182,7 +182,7 @@ func (b *Bot) listProposals(channelID string, args []string) {
 // handleVoteCommand handles vote commands
 func (b *Bot) handleVoteCommand(channelID string, args []string) {
 	if len(args) < 4 {
-		b.sendMessage(channelID, "❌ Usage: `!vote <chain> <proposal_id> <vote> <secret>`")
+		b.sendMessage(channelID, "❌ Usage: `!prop-vote <chain> <proposal_id> <vote> <secret>` (or `!pvote`)")
 		return
 	}
 
@@ -397,7 +397,7 @@ func (b *Bot) sendProposalNotification(proposal models.Proposal) {
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: fmt.Sprintf("Vote: !vote %s %s <yes/no/abstain/no_with_veto> <secret> • Chain: %s", proposal.ChainID, proposal.ProposalID, chainName),
+			Text: fmt.Sprintf("Vote: !pvote %s %s <yes/no/abstain/no_with_veto> <secret> • Chain: %s", proposal.ChainID, proposal.ProposalID, chainName),
 		},
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
