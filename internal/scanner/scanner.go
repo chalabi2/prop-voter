@@ -24,20 +24,42 @@ type Scanner struct {
 	client *http.Client
 }
 
-// GovernanceResponse represents the REST API response for governance proposals
-type GovernanceResponse struct {
-	Proposals  []ProposalData `json:"proposals"`
-	Pagination PaginationInfo `json:"pagination,omitempty"`
-}
-
 // PaginationInfo represents pagination information from the API
 type PaginationInfo struct {
 	NextKey string `json:"next_key,omitempty"`
 	Total   string `json:"total,omitempty"`
 }
 
-// ProposalData represents a single proposal from the REST API
+// ProposalData represents a unified proposal structure (internal use)
 type ProposalData struct {
+	ProposalID       string
+	Title            string
+	Description      string
+	Status           string
+	FinalTallyResult interface{}
+	SubmitTime       string
+	DepositEndTime   string
+	TotalDeposit     []interface{}
+	VotingStartTime  string
+	VotingEndTime    string
+}
+
+// ProposalDataV1 represents a proposal from the v1 API
+type ProposalDataV1 struct {
+	ID               string        `json:"id"`
+	Title            string        `json:"title"`
+	Summary          string        `json:"summary"`
+	Status           string        `json:"status"`
+	FinalTallyResult interface{}   `json:"final_tally_result"`
+	SubmitTime       string        `json:"submit_time"`
+	DepositEndTime   string        `json:"deposit_end_time"`
+	TotalDeposit     []interface{} `json:"total_deposit"`
+	VotingStartTime  string        `json:"voting_start_time"`
+	VotingEndTime    string        `json:"voting_end_time"`
+}
+
+// ProposalDataV1Beta1 represents a proposal from the v1beta1 API
+type ProposalDataV1Beta1 struct {
 	ProposalID       string        `json:"proposal_id"`
 	Content          Content       `json:"content"`
 	Status           string        `json:"status"`
@@ -49,11 +71,23 @@ type ProposalData struct {
 	VotingEndTime    string        `json:"voting_end_time"`
 }
 
-// Content represents the content of a proposal
+// Content represents the content of a proposal (v1beta1)
 type Content struct {
 	Type        string `json:"@type"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+}
+
+// GovernanceResponseV1 represents the v1 API response
+type GovernanceResponseV1 struct {
+	Proposals  []ProposalDataV1 `json:"proposals"`
+	Pagination PaginationInfo   `json:"pagination,omitempty"`
+}
+
+// GovernanceResponseV1Beta1 represents the v1beta1 API response
+type GovernanceResponseV1Beta1 struct {
+	Proposals  []ProposalDataV1Beta1 `json:"proposals"`
+	Pagination PaginationInfo        `json:"pagination,omitempty"`
 }
 
 // NewScanner creates a new proposal scanner
@@ -96,7 +130,7 @@ func (s *Scanner) scanAllChains(ctx context.Context) {
 		default:
 			if err := s.scanChain(ctx, chain); err != nil {
 				s.logger.Error("Failed to scan chain",
-					zap.String("chain", chain.Name),
+					zap.String("chain", chain.GetName()),
 					zap.Error(err),
 				)
 			}
@@ -106,23 +140,19 @@ func (s *Scanner) scanAllChains(ctx context.Context) {
 
 // scanChain scans a single chain for proposals
 func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error {
-	s.logger.Debug("Scanning chain for proposals", zap.String("chain", chain.Name))
+	s.logger.Debug("Scanning chain for proposals", zap.String("chain", chain.GetName()))
 
-	// Try v1beta1 with very small pagination first to avoid complex proposals
-	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
-
-	proposals, err := s.fetchProposals(ctx, url)
+	// Try v1beta1 first, then v1 if it fails
+	proposals, err := s.tryFetchProposalsV1Beta1(ctx, chain)
 	if err != nil {
-		// If v1beta1 fails due to conversion issues, try v1 endpoint
-		s.logger.Debug("v1beta1 failed, trying v1 endpoint", zap.String("chain", chain.Name), zap.Error(err))
-		urlV1 := fmt.Sprintf("%s/cosmos/gov/v1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
-		proposals, err = s.fetchProposals(ctx, urlV1)
+		s.logger.Debug("v1beta1 failed, trying v1 endpoint", zap.String("chain", chain.GetName()), zap.Error(err))
+		proposals, err = s.tryFetchProposalsV1(ctx, chain)
 		if err != nil {
 			return fmt.Errorf("both v1beta1 and v1 endpoints failed: %w", err)
 		}
 	}
 
-	s.logger.Debug("Fetched proposals with pagination",
+	s.logger.Debug("Fetched proposals",
 		zap.String("chain", chain.Name),
 		zap.Int("proposal_count", len(proposals)),
 	)
@@ -130,8 +160,10 @@ func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error
 	return s.processProposals(chain, proposals)
 }
 
-// fetchProposals fetches proposals from a given URL
-func (s *Scanner) fetchProposals(ctx context.Context, url string) ([]ProposalData, error) {
+// tryFetchProposalsV1Beta1 attempts to fetch proposals using the v1beta1 API
+func (s *Scanner) tryFetchProposalsV1Beta1(ctx context.Context, chain config.ChainConfig) ([]ProposalData, error) {
+	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -152,12 +184,78 @@ func (s *Scanner) fetchProposals(ctx context.Context, url string) ([]ProposalDat
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	var govResp GovernanceResponse
+	var govResp GovernanceResponseV1Beta1
 	if err := json.Unmarshal(body, &govResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal v1beta1 response: %w", err)
 	}
 
-	return govResp.Proposals, nil
+	// Convert v1beta1 proposals to unified format
+	var proposals []ProposalData
+	for _, p := range govResp.Proposals {
+		proposals = append(proposals, ProposalData{
+			ProposalID:       p.ProposalID,
+			Title:            p.Content.Title,
+			Description:      p.Content.Description,
+			Status:           p.Status,
+			FinalTallyResult: p.FinalTallyResult,
+			SubmitTime:       p.SubmitTime,
+			DepositEndTime:   p.DepositEndTime,
+			TotalDeposit:     p.TotalDeposit,
+			VotingStartTime:  p.VotingStartTime,
+			VotingEndTime:    p.VotingEndTime,
+		})
+	}
+
+	return proposals, nil
+}
+
+// tryFetchProposalsV1 attempts to fetch proposals using the v1 API
+func (s *Scanner) tryFetchProposalsV1(ctx context.Context, chain config.ChainConfig) ([]ProposalData, error) {
+	url := fmt.Sprintf("%s/cosmos/gov/v1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch proposals: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var govResp GovernanceResponseV1
+	if err := json.Unmarshal(body, &govResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal v1 response: %w", err)
+	}
+
+	// Convert v1 proposals to unified format
+	var proposals []ProposalData
+	for _, p := range govResp.Proposals {
+		proposals = append(proposals, ProposalData{
+			ProposalID:       p.ID,
+			Title:            p.Title,
+			Description:      p.Summary,
+			Status:           p.Status,
+			FinalTallyResult: p.FinalTallyResult,
+			SubmitTime:       p.SubmitTime,
+			DepositEndTime:   p.DepositEndTime,
+			TotalDeposit:     p.TotalDeposit,
+			VotingStartTime:  p.VotingStartTime,
+			VotingEndTime:    p.VotingEndTime,
+		})
+	}
+
+	return proposals, nil
 }
 
 // processProposals processes the proposals and stores new ones in the database
@@ -192,9 +290,9 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 				// Historical non-voting proposals: mark as already notified
 				newProposal.NotificationSent = true
 				s.logger.Debug("Historical proposal stored without notification",
-					zap.String("chain", chain.Name),
+					zap.String("chain", chain.GetName()),
 					zap.String("proposal_id", proposal.ProposalID),
-					zap.String("title", proposal.Content.Title),
+					zap.String("title", proposal.Title),
 					zap.String("status", proposal.Status),
 				)
 			} else {
@@ -202,16 +300,16 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 				newProposal.NotificationSent = false
 				if isActivelyVoting {
 					s.logger.Info("Active voting proposal found - notification queued",
-						zap.String("chain", chain.Name),
+						zap.String("chain", chain.GetName()),
 						zap.String("proposal_id", proposal.ProposalID),
-						zap.String("title", proposal.Content.Title),
+						zap.String("title", proposal.Title),
 						zap.String("status", proposal.Status),
 					)
 				} else {
 					s.logger.Info("New proposal found - notification queued",
-						zap.String("chain", chain.Name),
+						zap.String("chain", chain.GetName()),
 						zap.String("proposal_id", proposal.ProposalID),
-						zap.String("title", proposal.Content.Title),
+						zap.String("title", proposal.Title),
 						zap.String("status", proposal.Status),
 					)
 				}
@@ -219,7 +317,7 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 
 			if err := s.db.Create(&newProposal).Error; err != nil {
 				s.logger.Error("Failed to create proposal",
-					zap.String("chain", chain.Name),
+					zap.String("chain", chain.GetName()),
 					zap.String("proposal_id", proposal.ProposalID),
 					zap.Error(err),
 				)
@@ -231,7 +329,7 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 				existing.Status = proposal.Status
 				if err := s.db.Save(&existing).Error; err != nil {
 					s.logger.Error("Failed to update proposal",
-						zap.String("chain", chain.Name),
+						zap.String("chain", chain.GetName()),
 						zap.String("proposal_id", proposal.ProposalID),
 						zap.Error(err),
 					)
@@ -239,7 +337,7 @@ func (s *Scanner) processProposals(chain config.ChainConfig, proposals []Proposa
 			}
 		} else {
 			s.logger.Error("Database error checking proposal",
-				zap.String("chain", chain.Name),
+				zap.String("chain", chain.GetName()),
 				zap.String("proposal_id", proposal.ProposalID),
 				zap.Error(result.Error),
 			)
@@ -277,8 +375,8 @@ func (s *Scanner) convertToModel(chain config.ChainConfig, proposal ProposalData
 	model := models.Proposal{
 		ChainID:     chain.GetChainID(),
 		ProposalID:  proposal.ProposalID,
-		Title:       proposal.Content.Title,
-		Description: proposal.Content.Description,
+		Title:       proposal.Title,
+		Description: proposal.Description,
 		Status:      proposal.Status,
 	}
 
