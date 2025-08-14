@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  prop-voter:
+    build: .
+    container_name: prop-voter
+    restart: unless-stopped
+    volumes:
+      # Mount your actual config file
+      - ./config.yaml:/app/config.yaml:ro
+      # Mount data directory for database persistence
+      - ./data:/app/data
+      # Mount CLI tools and keyring if needed
+      - ~/.gaiad:/home/appuser/.gaiad:ro
+      - ~/.osmosisd:/home/appuser/.osmosisd:ro
+      # Add other chain directories as needed
+    environment:
+      - LOG_LEVEL=info
+    # Optional: if you need to expose ports
+    # ports:
+    #   - "8080:8080"
+    
+    # Resource limits (optional)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "pgrep", "prop-voter"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  data:
+    driver: local
+
+# Optional: if you want to use external networks
+# networks:
+#   cosmos:
+#     external: true

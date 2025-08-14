@@ -1,0 +1,559 @@
+package binmgr
+
+import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
+	"prop-voter/config"
+
+	"go.uber.org/zap"
+)
+
+// Manager handles binary downloads and updates from GitHub releases
+type Manager struct {
+	config *config.Config
+	logger *zap.Logger
+	client *http.Client
+}
+
+// GitHubRelease represents a GitHub release
+type GitHubRelease struct {
+	TagName string  `json:"tag_name"`
+	Name    string  `json:"name"`
+	Assets  []Asset `json:"assets"`
+}
+
+// Asset represents a release asset
+type Asset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Size               int64  `json:"size"`
+}
+
+// BinaryInfo holds information about a managed binary
+type BinaryInfo struct {
+	Name        string
+	Version     string
+	Path        string
+	LastUpdated time.Time
+}
+
+// NewManager creates a new binary manager
+func NewManager(config *config.Config, logger *zap.Logger) *Manager {
+	return &Manager{
+		config: config,
+		logger: logger,
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// Start begins the binary management process
+func (m *Manager) Start(ctx context.Context) error {
+	if !m.config.BinaryManager.Enabled {
+		m.logger.Info("Binary manager disabled")
+		return nil
+	}
+
+	// Create bin directory if it doesn't exist
+	if err := os.MkdirAll(m.config.BinaryManager.BinDir, 0755); err != nil {
+		return fmt.Errorf("failed to create bin directory: %w", err)
+	}
+
+	m.logger.Info("Starting binary manager",
+		zap.String("bin_dir", m.config.BinaryManager.BinDir),
+		zap.Duration("check_interval", m.config.BinaryManager.CheckInterval),
+		zap.Bool("auto_update", m.config.BinaryManager.AutoUpdate),
+	)
+
+	// Initial setup - download missing binaries
+	if err := m.setupBinaries(ctx); err != nil {
+		m.logger.Error("Failed to setup binaries", zap.Error(err))
+	}
+
+	// Start periodic update checker
+	ticker := time.NewTicker(m.config.BinaryManager.CheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Info("Stopping binary manager")
+			return ctx.Err()
+		case <-ticker.C:
+			if err := m.checkForUpdates(ctx); err != nil {
+				m.logger.Error("Failed to check for updates", zap.Error(err))
+			}
+		}
+	}
+}
+
+// setupBinaries downloads any missing binaries
+func (m *Manager) setupBinaries(ctx context.Context) error {
+	for _, chain := range m.config.Chains {
+		if !chain.BinaryRepo.Enabled {
+			continue
+		}
+
+		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.CLIName)
+		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+			m.logger.Info("Binary not found, downloading",
+				zap.String("chain", chain.Name),
+				zap.String("cli", chain.CLIName),
+			)
+
+			if err := m.downloadLatestBinary(ctx, chain); err != nil {
+				m.logger.Error("Failed to download binary",
+					zap.String("chain", chain.Name),
+					zap.Error(err),
+				)
+				continue
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkForUpdates checks for and optionally downloads binary updates
+func (m *Manager) checkForUpdates(ctx context.Context) error {
+	m.logger.Debug("Checking for binary updates")
+
+	for _, chain := range m.config.Chains {
+		if !chain.BinaryRepo.Enabled {
+			continue
+		}
+
+		// Get latest release info
+		release, err := m.getLatestRelease(ctx, chain.BinaryRepo)
+		if err != nil {
+			m.logger.Error("Failed to get latest release",
+				zap.String("chain", chain.Name),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		// Check if we need to update
+		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.CLIName)
+		currentVersion, err := m.getCurrentVersion(binaryPath)
+		if err != nil {
+			m.logger.Debug("Could not determine current version",
+				zap.String("chain", chain.Name),
+				zap.Error(err),
+			)
+		}
+
+		if currentVersion != release.TagName {
+			m.logger.Info("Update available",
+				zap.String("chain", chain.Name),
+				zap.String("current", currentVersion),
+				zap.String("latest", release.TagName),
+			)
+
+			if m.config.BinaryManager.AutoUpdate {
+				if err := m.downloadBinaryFromRelease(ctx, chain, release); err != nil {
+					m.logger.Error("Failed to update binary",
+						zap.String("chain", chain.Name),
+						zap.Error(err),
+					)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// downloadLatestBinary downloads the latest binary for a chain
+func (m *Manager) downloadLatestBinary(ctx context.Context, chain config.ChainConfig) error {
+	release, err := m.getLatestRelease(ctx, chain.BinaryRepo)
+	if err != nil {
+		return fmt.Errorf("failed to get latest release: %w", err)
+	}
+
+	return m.downloadBinaryFromRelease(ctx, chain, release)
+}
+
+// downloadBinaryFromRelease downloads a binary from a specific release
+func (m *Manager) downloadBinaryFromRelease(ctx context.Context, chain config.ChainConfig, release *GitHubRelease) error {
+	// Find the appropriate asset for our platform
+	asset, err := m.findAssetForPlatform(release.Assets, chain.BinaryRepo.AssetPattern)
+	if err != nil {
+		return fmt.Errorf("failed to find asset: %w", err)
+	}
+
+	m.logger.Info("Downloading binary",
+		zap.String("chain", chain.Name),
+		zap.String("version", release.TagName),
+		zap.String("asset", asset.Name),
+		zap.Int64("size", asset.Size),
+	)
+
+	// Download the asset
+	req, err := http.NewRequestWithContext(ctx, "GET", asset.BrowserDownloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download asset: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	// Create temporary file
+	tmpFile, err := os.CreateTemp("", "binary-download-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	// Download to temp file
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		return fmt.Errorf("failed to save download: %w", err)
+	}
+
+	tmpFile.Close()
+
+	// Extract and install the binary
+	binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.CLIName)
+
+	// Backup old binary if it exists and backup is enabled
+	if m.config.BinaryManager.BackupOld {
+		if _, err := os.Stat(binaryPath); err == nil {
+			backupPath := binaryPath + ".backup"
+			if err := os.Rename(binaryPath, backupPath); err != nil {
+				m.logger.Warn("Failed to backup old binary", zap.Error(err))
+			} else {
+				m.logger.Info("Backed up old binary", zap.String("path", backupPath))
+			}
+		}
+	}
+
+	if err := m.extractBinary(tmpFile.Name(), binaryPath, chain.CLIName, asset.Name); err != nil {
+		return fmt.Errorf("failed to extract binary: %w", err)
+	}
+
+	// Make executable
+	if err := os.Chmod(binaryPath, 0755); err != nil {
+		return fmt.Errorf("failed to make binary executable: %w", err)
+	}
+
+	m.logger.Info("Binary updated successfully",
+		zap.String("chain", chain.Name),
+		zap.String("version", release.TagName),
+		zap.String("path", binaryPath),
+	)
+
+	return nil
+}
+
+// getLatestRelease gets the latest release from GitHub
+func (m *Manager) getLatestRelease(ctx context.Context, repo config.BinaryRepo) (*GitHubRelease, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", repo.Owner, repo.Repo)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &release, nil
+}
+
+// findAssetForPlatform finds the appropriate asset for the current platform
+func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, error) {
+	platformParts := []string{runtime.GOOS, runtime.GOARCH}
+
+	// Common platform mappings
+	platformMap := map[string]string{
+		"darwin":  "darwin",
+		"linux":   "linux",
+		"windows": "windows",
+		"amd64":   "amd64",
+		"arm64":   "arm64",
+		"386":     "386",
+	}
+
+	for _, asset := range assets {
+		name := strings.ToLower(asset.Name)
+
+		// Check if asset matches the pattern (if specified)
+		if pattern != "" && !matchesPattern(name, pattern) {
+			continue
+		}
+
+		// Check if asset matches our platform
+		osMatch := false
+		archMatch := false
+
+		for _, part := range platformParts {
+			mapped, exists := platformMap[part]
+			if !exists {
+				mapped = part
+			}
+
+			if strings.Contains(name, mapped) {
+				if part == runtime.GOOS {
+					osMatch = true
+				} else if part == runtime.GOARCH {
+					archMatch = true
+				}
+			}
+		}
+
+		if osMatch && archMatch {
+			return &asset, nil
+		}
+	}
+
+	// Fallback: try to find any asset that contains the OS
+	for _, asset := range assets {
+		name := strings.ToLower(asset.Name)
+		if strings.Contains(name, runtime.GOOS) {
+			return &asset, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no suitable asset found for platform %s/%s", runtime.GOOS, runtime.GOARCH)
+}
+
+// matchesPattern checks if a string matches a simple pattern (supports * wildcards)
+func matchesPattern(s, pattern string) bool {
+	pattern = strings.ToLower(pattern)
+
+	// Simple wildcard matching
+	if strings.Contains(pattern, "*") {
+		parts := strings.Split(pattern, "*")
+		pos := 0
+		for i, part := range parts {
+			if part == "" {
+				continue
+			}
+
+			idx := strings.Index(s[pos:], part)
+			if idx == -1 {
+				return false
+			}
+
+			pos += idx + len(part)
+
+			// For the first part, it should match from the beginning
+			if i == 0 && idx != 0 {
+				return false
+			}
+		}
+
+		// For the last part, it should match to the end
+		lastPart := parts[len(parts)-1]
+		if lastPart != "" && !strings.HasSuffix(s, lastPart) {
+			return false
+		}
+
+		return true
+	}
+
+	return strings.Contains(s, pattern)
+}
+
+// extractBinary extracts a binary from an archive or copies it if it's not archived
+func (m *Manager) extractBinary(srcPath, destPath, binaryName, assetName string) error {
+	if strings.HasSuffix(assetName, ".tar.gz") || strings.HasSuffix(assetName, ".tgz") {
+		return m.extractFromTarGz(srcPath, destPath, binaryName)
+	} else if strings.HasSuffix(assetName, ".zip") {
+		return m.extractFromZip(srcPath, destPath, binaryName)
+	} else {
+		// Assume it's a raw binary
+		return m.copyFile(srcPath, destPath)
+	}
+}
+
+// extractFromTarGz extracts a binary from a tar.gz archive
+func (m *Manager) extractFromTarGz(srcPath, destPath, binaryName string) error {
+	file, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	gzr, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Look for the binary (it might be in a subdirectory)
+		if strings.HasSuffix(header.Name, binaryName) || strings.HasSuffix(header.Name, binaryName+".exe") {
+			outFile, err := os.Create(destPath)
+			if err != nil {
+				return err
+			}
+			defer outFile.Close()
+
+			_, err = io.Copy(outFile, tr)
+			return err
+		}
+	}
+
+	return fmt.Errorf("binary %s not found in archive", binaryName)
+}
+
+// extractFromZip extracts a binary from a zip archive
+func (m *Manager) extractFromZip(srcPath, destPath, binaryName string) error {
+	r, err := zip.OpenReader(srcPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		// Look for the binary (it might be in a subdirectory)
+		if strings.HasSuffix(f.Name, binaryName) || strings.HasSuffix(f.Name, binaryName+".exe") {
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			defer rc.Close()
+
+			outFile, err := os.Create(destPath)
+			if err != nil {
+				return err
+			}
+			defer outFile.Close()
+
+			_, err = io.Copy(outFile, rc)
+			return err
+		}
+	}
+
+	return fmt.Errorf("binary %s not found in archive", binaryName)
+}
+
+// copyFile copies a file from src to dest
+func (m *Manager) copyFile(src, dest string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	destFile, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, srcFile)
+	return err
+}
+
+// getCurrentVersion attempts to get the current version of a binary
+func (m *Manager) getCurrentVersion(binaryPath string) (string, error) {
+	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("binary not found")
+	}
+
+	// Try common version commands
+	versionCommands := [][]string{
+		{"version"},
+		{"--version"},
+		{"-v"},
+		{"-version"},
+	}
+
+	for _, args := range versionCommands {
+		if version := m.tryGetVersion(binaryPath, args); version != "" {
+			return version, nil
+		}
+	}
+
+	return "unknown", nil
+}
+
+// tryGetVersion tries to get version using specific arguments
+func (m *Manager) tryGetVersion(binaryPath string, args []string) string {
+	// This would need os/exec but keeping it simple for now
+	// In a real implementation, you'd use exec.CommandContext
+	return ""
+}
+
+// GetManagedBinaries returns information about all managed binaries
+func (m *Manager) GetManagedBinaries() ([]BinaryInfo, error) {
+	var binaries []BinaryInfo
+
+	for _, chain := range m.config.Chains {
+		if !chain.BinaryRepo.Enabled {
+			continue
+		}
+
+		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.CLIName)
+
+		var info BinaryInfo
+		info.Name = chain.CLIName
+		info.Path = binaryPath
+
+		if stat, err := os.Stat(binaryPath); err == nil {
+			info.LastUpdated = stat.ModTime()
+		}
+
+		if version, err := m.getCurrentVersion(binaryPath); err == nil {
+			info.Version = version
+		}
+
+		binaries = append(binaries, info)
+	}
+
+	return binaries, nil
+}
+
+// UpdateBinary manually updates a specific binary
+func (m *Manager) UpdateBinary(ctx context.Context, chainName string) error {
+	for _, chain := range m.config.Chains {
+		if chain.Name == chainName && chain.BinaryRepo.Enabled {
+			return m.downloadLatestBinary(ctx, chain)
+		}
+	}
+
+	return fmt.Errorf("chain %s not found or binary management not enabled", chainName)
+}

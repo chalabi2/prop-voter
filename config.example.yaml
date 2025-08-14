@@ -1,0 +1,78 @@
+discord:
+  token: "YOUR_DISCORD_BOT_TOKEN"
+  channel_id: "YOUR_DISCORD_CHANNEL_ID"
+  allowed_user_id: "YOUR_DISCORD_USER_ID"
+
+database:
+  path: "./prop-voter.db"
+
+security:
+  encryption_key: "your-32-char-encryption-key-here"
+  vote_secret: "your-secret-phrase-for-voting"
+
+scanning:
+  interval: "5m"
+  batch_size: 10
+
+health:
+  enabled: true
+  port: 8080
+  path: "/health"
+
+# Binary manager for auto-downloading CLI tools
+binary_manager:
+  enabled: true
+  bin_dir: "./bin"
+  check_interval: "24h"
+  auto_update: false # Set to true for automatic updates
+  backup_old: true
+
+# Key manager for secure wallet key handling
+key_manager:
+  auto_import: false # Set to true to auto-import keys from key_dir
+  key_dir: "./keys"
+  backup_keys: true
+  encrypt_keys: true
+
+chains:
+  - name: "Cosmos Hub"
+    chain_id: "cosmoshub-4"
+    rpc: "https://rpc-cosmoshub.blockapsis.com"
+    rest: "https://lcd-cosmoshub.blockapsis.com"
+    denom: "uatom"
+    prefix: "cosmos"
+    cli_name: "gaiad"
+    wallet_key: "my-cosmos-key"
+    binary_repo:
+      enabled: true
+      owner: "cosmos"
+      repo: "gaia"
+      asset_pattern: "*linux-amd64*" # Adjust for your platform
+
+  - name: "Osmosis"
+    chain_id: "osmosis-1"
+    rpc: "https://rpc-osmosis.blockapsis.com"
+    rest: "https://lcd-osmosis.blockapsis.com"
+    denom: "uosmo"
+    prefix: "osmo"
+    cli_name: "osmosisd"
+    wallet_key: "my-osmosis-key"
+    binary_repo:
+      enabled: true
+      owner: "osmosis-labs"
+      repo: "osmosis"
+      asset_pattern: "*linux-amd64*"
+
+  - name: "Juno"
+    chain_id: "juno-1"
+    rpc: "https://rpc-juno.blockapsis.com"
+    rest: "https://lcd-juno.blockapsis.com"
+    denom: "ujuno"
+    prefix: "juno"
+    cli_name: "junod"
+    wallet_key: "my-juno-key"
+    binary_repo:
+      enabled: true
+      owner: "CosmosContracts"
+      repo: "juno"
+      asset_pattern: "*linux-amd64*"
