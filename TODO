@@ -1,2 +1,1 @@
-- Check our binary version against most recent release
 - Add authz support for secure validator voting (in message passing)
