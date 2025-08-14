@@ -114,8 +114,8 @@ func (m *Manager) ImportKey(chainName, keyName, mnemonic string) error {
 		zap.String("key", keyName),
 	)
 
-	// Use the CLI to import the key
-	cmd := exec.Command(binaryPath, "keys", "add", keyName, "--recover")
+	// Use the CLI to import the key with proper keyring backend
+	cmd := exec.Command(binaryPath, "keys", "add", keyName, "--recover", "--keyring-backend", "test")
 
 	// Set up stdin to provide the mnemonic
 	stdin, err := cmd.StdinPipe()
@@ -332,13 +332,13 @@ func (m *Manager) findChainConfig(chainName string) *config.ChainConfig {
 }
 
 func (m *Manager) keyExists(binaryPath, keyName string) (bool, error) {
-	cmd := exec.Command(binaryPath, "keys", "show", keyName, "--address")
+	cmd := exec.Command(binaryPath, "keys", "show", keyName, "--address", "--keyring-backend", "test")
 	err := cmd.Run()
 	return err == nil, nil
 }
 
 func (m *Manager) getKeyAddress(binaryPath, keyName string) (string, error) {
-	cmd := exec.Command(binaryPath, "keys", "show", keyName, "--address")
+	cmd := exec.Command(binaryPath, "keys", "show", keyName, "--address", "--keyring-backend", "test")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -347,7 +347,7 @@ func (m *Manager) getKeyAddress(binaryPath, keyName string) (string, error) {
 }
 
 func (m *Manager) listChainKeys(binaryPath, chainName string) ([]KeyInfo, error) {
-	cmd := exec.Command(binaryPath, "keys", "list", "--output", "json")
+	cmd := exec.Command(binaryPath, "keys", "list", "--output", "json", "--keyring-backend", "test")
 	_, err := cmd.Output()
 	if err != nil {
 		// Fallback to simple list
@@ -360,7 +360,7 @@ func (m *Manager) listChainKeys(binaryPath, chainName string) ([]KeyInfo, error)
 }
 
 func (m *Manager) listChainKeysSimple(binaryPath, chainName string) ([]KeyInfo, error) {
-	cmd := exec.Command(binaryPath, "keys", "list")
+	cmd := exec.Command(binaryPath, "keys", "list", "--keyring-backend", "test")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -416,8 +416,8 @@ func (m *Manager) importKeyFromFile(binaryPath, keyName, keyFile string) error {
 
 	mnemonic := strings.TrimSpace(string(content))
 
-	// Import using CLI
-	cmd := exec.Command(binaryPath, "keys", "add", keyName, "--recover")
+	// Import using CLI with proper keyring backend
+	cmd := exec.Command(binaryPath, "keys", "add", keyName, "--recover", "--keyring-backend", "test")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
