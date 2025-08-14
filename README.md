@@ -26,7 +26,9 @@ A secure, automated Cosmos governance proposal monitoring and voting bot for Dis
 - **Discord Notifications**: Sends real-time notifications when new proposals are detected
 - **Secure Voting**: Vote on proposals through Discord commands with secret verification
 - **Wallet Security**: Encrypted wallet storage with user authentication
-- **Configurable**: Easy YAML configuration for chains, RPCs, and scanning intervals
+- **Chain Registry Integration**: Automatically discovers chain metadata from the official Cosmos Chain Registry
+- **Simplified Configuration**: Just specify chain name, RPC, REST, and wallet key - everything else is auto-discovered
+- **Legacy Support**: Maintains compatibility with manual chain configuration
 - **Access Control**: Only responds to authorized Discord users
 - **Health Monitoring**: Built-in health endpoints for monitoring and alerting
 - **Thoroughly Tested**: Comprehensive unit and integration test coverage
@@ -94,9 +96,11 @@ make setup
 
 ## Configuration
 
-### Basic Configuration
+Prop-Voter supports two configuration formats: the new **Chain Registry format** (recommended) and the **legacy format** for maximum compatibility.
 
-Edit `config.yaml` with your settings:
+### Chain Registry Configuration (Recommended)
+
+The new simplified format automatically discovers chain metadata from the official [Cosmos Chain Registry](https://github.com/cosmos/chain-registry):
 
 ```yaml
 # Basic service configuration
@@ -134,7 +138,42 @@ discord:
   channel_id: "YOUR_CHANNEL_ID_HERE"
   allowed_user_id: "YOUR_USER_ID_HERE"
 
-# Chain configurations
+# Simplified chain configurations using Chain Registry
+chains:
+  # Osmosis - just 4 lines needed!
+  - chain_name: "osmosis" # Chain Registry identifier
+    rpc: "https://rpc-osmosis.blockapsis.com"
+    rest: "https://lcd-osmosis.blockapsis.com"
+    wallet_key: "my-osmosis-key"
+    # Everything else auto-discovered: chain_id, daemon_name, denom, prefix, binary_url, logo, etc.
+
+  # Juno - equally simple
+  - chain_name: "juno"
+    rpc: "https://rpc-juno.blockapsis.com"
+    rest: "https://lcd-juno.blockapsis.com"
+    wallet_key: "my-juno-key"
+
+  # You can mix formats - legacy format for unsupported chains
+  - name: "Custom Chain"
+    chain_id: "custom-1"
+    rpc: "https://rpc-custom.example.com"
+    rest: "https://lcd-custom.example.com"
+    denom: "ucustom"
+    prefix: "custom"
+    cli_name: "customd"
+    wallet_key: "my-custom-key"
+    binary_repo:
+      enabled: true
+      owner: "custom-org"
+      repo: "custom-chain"
+      asset_pattern: "*linux-amd64*"
+```
+
+### Legacy Configuration Format
+
+For chains not in the Chain Registry or when you need full control:
+
+```yaml
 chains:
   - name: "Cosmos Hub"
     chain_id: "cosmoshub-4"
@@ -144,6 +183,7 @@ chains:
     prefix: "cosmos"
     cli_name: "gaiad"
     wallet_key: "my-cosmos-key"
+    logo_url: "https://example.com/cosmos-logo.png"
     binary_repo:
       enabled: true
       owner: "cosmos"
@@ -151,9 +191,57 @@ chains:
       asset_pattern: "*linux-amd64*"
 ```
 
-### Platform-Specific Binary Patterns
+### Chain Registry Benefits
 
-Common asset patterns for different platforms:
+Using the Chain Registry format provides:
+
+- **Automatic Updates**: Chain metadata is always current
+- **Reduced Configuration**: 70% fewer config lines per chain
+- **Consistency**: Uses official chain data from the Cosmos ecosystem
+- **Binary Discovery**: Automatically finds the latest compatible binaries
+- **Future-Proof**: New chains are supported automatically once added to the registry
+
+### Supported Chain Registry Chains
+
+The following chains are supported through the Chain Registry (just use `chain_name`):
+
+- `cosmoshub` - Cosmos Hub
+- `osmosis` - Osmosis DEX
+- `juno` - Juno Network
+- `akash` - Akash Network
+- `kujira` - Kujira
+- `stargaze` - Stargaze
+- `injective` - Injective Protocol
+- `stride` - Stride Zone
+- `evmos` - Evmos
+- `kava` - Kava
+- `secret` - Secret Network
+- `terra2` - Terra 2.0
+- `persistence` - Persistence
+- `sommelier` - Sommelier
+- `gravity-bridge` - Gravity Bridge
+- `crescent` - Crescent Network
+- `chihuahua` - Chihuahua Chain
+- `comdex` - Comdex
+- `desmos` - Desmos
+- `regen` - Regen Network
+- `sentinel` - Sentinel
+- `cyber` - Cyber
+- `iris` - IRISnet
+- `fetchai` - Fetch.ai
+- `archway` - Archway
+- `neutron` - Neutron
+- `noble` - Noble
+- `composable` - Composable Finance
+- `saga` - Saga
+- `dymension` - Dymension
+- `celestia` - Celestia
+
+And many more! See the complete list: `./prop-voter -registry list`
+
+### Platform-Specific Binary Patterns (Legacy Format)
+
+When using legacy configuration, common asset patterns for different platforms:
 
 - **Linux AMD64**: `*linux-amd64*`
 - **Linux ARM64**: `*linux-arm64*`
@@ -773,9 +861,15 @@ spec:
    - Verify the bot is online (green status in Discord)
 
 4. **RPC/REST endpoints**:
+
    - Test endpoints manually: `curl <rest-endpoint>/cosmos/gov/v1beta1/proposals?pagination.limit=1`
    - Try alternative public endpoints if needed
    - The scanner uses pagination to fetch only recent proposals
+
+5. **Chain Registry issues**:
+   - Network connectivity to Chain Registry: `curl -s https://raw.githubusercontent.com/cosmos/chain-registry/master/osmosis/chain.json`
+   - Invalid chain names: Use exact Chain Registry identifiers (e.g., `osmosis`, not `Osmosis`)
+   - Verify chain support: `./prop-voter -registry list`
 
 ### Binary Issues
 
@@ -805,11 +899,17 @@ gaiad keys show my-key --address
 
 ### Common Problems
 
-1. **Binary Not Found**: Check the asset pattern matches available releases
+1. **Binary Not Found**:
+   - Chain Registry: Binaries are auto-discovered, no configuration needed
+   - Legacy: Check the asset pattern matches available releases
 2. **Key Import Fails**: Verify mnemonic format and chain CLI compatibility
 3. **Permission Errors**: Ensure proper file permissions on bin and key directories
-4. **Network Issues**: Check GitHub API access and rate limits
-5. **Governance API Errors**: The scanner fetches only the 25 most recent proposals to prevent API overload and compatibility issues with chains that have upgraded governance modules
+4. **Network Issues**: Check GitHub API access and Chain Registry connectivity
+5. **Chain Registry Errors**:
+   - Use exact chain names from the registry (case-sensitive)
+   - Check network access to `https://raw.githubusercontent.com/cosmos/chain-registry/`
+   - Verify chain exists: `./prop-voter -registry list`
+6. **Governance API Errors**: The scanner fetches only the 25 most recent proposals to prevent API overload and compatibility issues with chains that have upgraded governance modules
 
 ### Logs
 

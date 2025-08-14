@@ -16,15 +16,17 @@ import (
 	"time"
 
 	"prop-voter/config"
+	"prop-voter/internal/registry"
 
 	"go.uber.org/zap"
 )
 
 // Manager handles binary downloads and updates from GitHub releases
 type Manager struct {
-	config *config.Config
-	logger *zap.Logger
-	client *http.Client
+	config          *config.Config
+	logger          *zap.Logger
+	client          *http.Client
+	registryManager *registry.Manager
 }
 
 // GitHubRelease represents a GitHub release
@@ -50,11 +52,12 @@ type BinaryInfo struct {
 }
 
 // NewManager creates a new binary manager
-func NewManager(config *config.Config, logger *zap.Logger) *Manager {
+func NewManager(config *config.Config, logger *zap.Logger, registryManager *registry.Manager) *Manager {
 	return &Manager{
-		config: config,
-		logger: logger,
-		client: &http.Client{Timeout: 30 * time.Second},
+		config:          config,
+		logger:          logger,
+		client:          &http.Client{Timeout: 30 * time.Second},
+		registryManager: registryManager,
 	}
 }
 
@@ -101,20 +104,21 @@ func (m *Manager) Start(ctx context.Context) error {
 // setupBinaries downloads any missing binaries
 func (m *Manager) setupBinaries(ctx context.Context) error {
 	for _, chain := range m.config.Chains {
-		if !chain.BinaryRepo.Enabled {
+		// Skip if binary management not enabled for this chain
+		if !chain.UsesChainRegistry() && !chain.BinaryRepo.Enabled {
 			continue
 		}
 
-		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.CLIName)
+		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
 		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
 			m.logger.Info("Binary not found, downloading",
-				zap.String("chain", chain.Name),
-				zap.String("cli", chain.CLIName),
+				zap.String("chain", chain.GetName()),
+				zap.String("cli", chain.GetCLIName()),
 			)
 
-			if err := m.downloadLatestBinary(ctx, chain); err != nil {
+			if err := m.downloadLatestBinary(ctx, &chain); err != nil {
 				m.logger.Error("Failed to download binary",
-					zap.String("chain", chain.Name),
+					zap.String("chain", chain.GetName()),
 					zap.Error(err),
 				)
 				continue
@@ -130,41 +134,72 @@ func (m *Manager) checkForUpdates(ctx context.Context) error {
 	m.logger.Debug("Checking for binary updates")
 
 	for _, chain := range m.config.Chains {
-		if !chain.BinaryRepo.Enabled {
+		// Skip if binary management not enabled for this chain
+		if !chain.UsesChainRegistry() && !chain.BinaryRepo.Enabled {
 			continue
 		}
 
-		// Get latest release info
+		// Get binary info (works for both Chain Registry and legacy formats)
+		binaryInfo, err := m.getBinaryInfoForChain(ctx, &chain)
+		if err != nil {
+			m.logger.Error("Failed to get binary info",
+				zap.String("chain", chain.GetName()),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		// For Chain Registry, we use direct binary URL (always latest)
+		// For legacy format, check GitHub releases
+		if chain.UsesChainRegistry() {
+			// Chain Registry provides direct binary URLs, assume they're always latest
+			binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
+			if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+				m.logger.Info("Binary missing, downloading from Chain Registry",
+					zap.String("chain", chain.GetName()),
+					zap.String("version", binaryInfo.Version),
+				)
+				if err := m.downloadBinaryFromURL(ctx, &chain, binaryInfo.BinaryURL, binaryInfo.Version); err != nil {
+					m.logger.Error("Failed to download binary",
+						zap.String("chain", chain.GetName()),
+						zap.Error(err),
+					)
+				}
+			}
+			continue
+		}
+
+		// Legacy format: check GitHub releases
 		release, err := m.getLatestRelease(ctx, chain.BinaryRepo)
 		if err != nil {
 			m.logger.Error("Failed to get latest release",
-				zap.String("chain", chain.Name),
+				zap.String("chain", chain.GetName()),
 				zap.Error(err),
 			)
 			continue
 		}
 
 		// Check if we need to update
-		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.CLIName)
+		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
 		currentVersion, err := m.getCurrentVersion(binaryPath)
 		if err != nil {
 			m.logger.Debug("Could not determine current version",
-				zap.String("chain", chain.Name),
+				zap.String("chain", chain.GetName()),
 				zap.Error(err),
 			)
 		}
 
 		if currentVersion != release.TagName {
 			m.logger.Info("Update available",
-				zap.String("chain", chain.Name),
+				zap.String("chain", chain.GetName()),
 				zap.String("current", currentVersion),
 				zap.String("latest", release.TagName),
 			)
 
 			if m.config.BinaryManager.AutoUpdate {
-				if err := m.downloadBinaryFromRelease(ctx, chain, release); err != nil {
+				if err := m.downloadBinaryFromRelease(ctx, &chain, release); err != nil {
 					m.logger.Error("Failed to update binary",
-						zap.String("chain", chain.Name),
+						zap.String("chain", chain.GetName()),
 						zap.Error(err),
 					)
 				}
@@ -176,7 +211,18 @@ func (m *Manager) checkForUpdates(ctx context.Context) error {
 }
 
 // downloadLatestBinary downloads the latest binary for a chain
-func (m *Manager) downloadLatestBinary(ctx context.Context, chain config.ChainConfig) error {
+func (m *Manager) downloadLatestBinary(ctx context.Context, chain *config.ChainConfig) error {
+	if chain.UsesChainRegistry() {
+		// Use Chain Registry binary URL
+		binaryInfo, err := m.getBinaryInfoForChain(ctx, chain)
+		if err != nil {
+			return fmt.Errorf("failed to get binary info from registry: %w", err)
+		}
+
+		return m.downloadBinaryFromURL(ctx, chain, binaryInfo.BinaryURL, binaryInfo.Version)
+	}
+
+	// Legacy format: use GitHub releases
 	release, err := m.getLatestRelease(ctx, chain.BinaryRepo)
 	if err != nil {
 		return fmt.Errorf("failed to get latest release: %w", err)
@@ -185,8 +231,52 @@ func (m *Manager) downloadLatestBinary(ctx context.Context, chain config.ChainCo
 	return m.downloadBinaryFromRelease(ctx, chain, release)
 }
 
+// getBinaryInfoForChain gets binary information for a chain
+func (m *Manager) getBinaryInfoForChain(ctx context.Context, chain *config.ChainConfig) (*registry.BinaryInfo, error) {
+	return m.registryManager.GetBinaryInfoForChain(ctx, chain)
+}
+
+// downloadBinaryFromURL downloads a binary from a direct URL
+func (m *Manager) downloadBinaryFromURL(ctx context.Context, chain *config.ChainConfig, binaryURL, version string) error {
+	m.logger.Info("Downloading binary from URL",
+		zap.String("chain", chain.GetName()),
+		zap.String("version", version),
+		zap.String("url", binaryURL),
+	)
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "GET", binaryURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Download the file
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download binary: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d when downloading binary", resp.StatusCode)
+	}
+
+	// Determine file extension and extraction method
+	binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
+
+	// Handle different archive formats
+	if strings.HasSuffix(binaryURL, ".zip") {
+		return m.extractZipBinary(resp.Body, binaryPath, chain.GetCLIName())
+	} else if strings.HasSuffix(binaryURL, ".tar.gz") {
+		return m.extractTarGzBinary(resp.Body, binaryPath, chain.GetCLIName())
+	} else {
+		// Direct binary download
+		return m.saveBinary(resp.Body, binaryPath)
+	}
+}
+
 // downloadBinaryFromRelease downloads a binary from a specific release
-func (m *Manager) downloadBinaryFromRelease(ctx context.Context, chain config.ChainConfig, release *GitHubRelease) error {
+func (m *Manager) downloadBinaryFromRelease(ctx context.Context, chain *config.ChainConfig, release *GitHubRelease) error {
 	// Find the appropriate asset for our platform
 	asset, err := m.findAssetForPlatform(release.Assets, chain.BinaryRepo.AssetPattern)
 	if err != nil {
@@ -570,10 +660,92 @@ func (m *Manager) GetManagedBinaries() ([]BinaryInfo, error) {
 // UpdateBinary manually updates a specific binary
 func (m *Manager) UpdateBinary(ctx context.Context, chainName string) error {
 	for _, chain := range m.config.Chains {
-		if chain.Name == chainName && chain.BinaryRepo.Enabled {
-			return m.downloadLatestBinary(ctx, chain)
+		if (chain.GetName() == chainName || chain.ChainRegistryName == chainName) &&
+			(chain.UsesChainRegistry() || chain.BinaryRepo.Enabled) {
+			return m.downloadLatestBinary(ctx, &chain)
 		}
 	}
 
 	return fmt.Errorf("chain %s not found or binary management not enabled", chainName)
+}
+
+// saveBinary saves a binary directly from an io.Reader
+func (m *Manager) saveBinary(reader io.Reader, binaryPath string) error {
+	// Create temporary file first
+	tempPath := binaryPath + ".tmp"
+
+	outFile, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer outFile.Close()
+
+	// Copy the binary data
+	size, err := io.Copy(outFile, reader)
+	if err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write binary: %w", err)
+	}
+
+	// Close the file before moving
+	outFile.Close()
+
+	// Make it executable
+	if err := os.Chmod(tempPath, 0755); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to make binary executable: %w", err)
+	}
+
+	// Move temp file to final location
+	if err := os.Rename(tempPath, binaryPath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to move binary to final location: %w", err)
+	}
+
+	m.logger.Info("Binary saved successfully",
+		zap.String("path", binaryPath),
+		zap.Int64("size", size),
+	)
+
+	return nil
+}
+
+// extractZipBinary extracts a binary from a ZIP archive stream
+func (m *Manager) extractZipBinary(reader io.Reader, binaryPath, binaryName string) error {
+	// Save to temp file first
+	tempPath := binaryPath + ".zip.tmp"
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tempPath)
+
+	if _, err := io.Copy(tempFile, reader); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("failed to save archive: %w", err)
+	}
+	tempFile.Close()
+
+	// Extract from temp file
+	return m.extractFromZip(tempPath, binaryPath, binaryName)
+}
+
+// extractTarGzBinary extracts a binary from a tar.gz archive stream
+func (m *Manager) extractTarGzBinary(reader io.Reader, binaryPath, binaryName string) error {
+	// Save to temp file first
+	tempPath := binaryPath + ".tar.gz.tmp"
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tempPath)
+
+	if _, err := io.Copy(tempFile, reader); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("failed to save archive: %w", err)
+	}
+	tempFile.Close()
+
+	// Extract from temp file
+	return m.extractFromTarGz(tempPath, binaryPath, binaryName)
 }

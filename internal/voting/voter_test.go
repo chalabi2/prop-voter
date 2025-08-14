@@ -53,6 +53,7 @@ func TestBuildVoteCommand(t *testing.T) {
 		"--gas", "auto",
 		"--gas-adjustment", "1.3",
 		"--fees", "5000utest",
+		"--keyring-backend", "test",
 		"--yes",
 		"--output", "json",
 	}

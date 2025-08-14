@@ -14,6 +14,7 @@ import (
 	"prop-voter/internal/health"
 	"prop-voter/internal/keymgr"
 	"prop-voter/internal/models"
+	"prop-voter/internal/registry"
 	"prop-voter/internal/scanner"
 	"prop-voter/internal/voting"
 	"prop-voter/internal/wallet"
@@ -25,11 +26,12 @@ import (
 
 func main() {
 	var (
-		configPath = flag.String("config", "config.yaml", "Path to configuration file")
-		validate   = flag.Bool("validate", false, "Validate configuration and chains then exit")
-		debug      = flag.Bool("debug", false, "Enable debug logging")
-		keyCmd     = flag.String("key", "", "Key management command (list, import, export, backup, validate)")
-		binaryCmd  = flag.String("binary", "", "Binary management command (list, update, check)")
+		configPath  = flag.String("config", "config.yaml", "Path to configuration file")
+		validate    = flag.Bool("validate", false, "Validate configuration and chains then exit")
+		debug       = flag.Bool("debug", false, "Enable debug logging")
+		keyCmd      = flag.String("key", "", "Key management command (list, import, export, backup, validate)")
+		binaryCmd   = flag.String("binary", "", "Binary management command (list, update, check)")
+		registryCmd = flag.String("registry", "", "Chain Registry command (list, info, clear-cache)")
 	)
 	flag.Parse()
 
@@ -64,6 +66,17 @@ func main() {
 		zap.Duration("scan_interval", cfg.Scanning.Interval),
 	)
 
+	// Initialize Chain Registry manager
+	registryManager := registry.NewManager(logger)
+
+	// Populate Chain Registry information for chains that use it
+	ctx := context.Background()
+	if err := registryManager.PopulateChainConfigs(ctx, cfg.Chains); err != nil {
+		logger.Fatal("Failed to populate chain configurations from Chain Registry", zap.Error(err))
+	}
+
+	logger.Info("Chain Registry integration completed")
+
 	// Handle CLI commands
 	if *keyCmd != "" {
 		cmdArgs := append([]string{*keyCmd}, args...)
@@ -81,6 +94,14 @@ func main() {
 		return
 	}
 
+	if *registryCmd != "" {
+		cmdArgs := append([]string{*registryCmd}, args...)
+		if err := handleRegistryCommand(cmdArgs, registryManager, logger); err != nil {
+			logger.Fatal("Registry command failed", zap.Error(err))
+		}
+		return
+	}
+
 	// Initialize database
 	db, err := initDatabase(cfg.Database.Path, logger)
 	if err != nil {
@@ -93,8 +114,8 @@ func main() {
 		logger.Fatal("Failed to initialize wallet manager", zap.Error(err))
 	}
 
-	// Initialize binary manager
-	binaryManager := binmgr.NewManager(cfg, logger)
+	// Initialize binary manager with Chain Registry support
+	binaryManager := binmgr.NewManager(cfg, logger, registryManager)
 
 	// Initialize key manager
 	keyManager := keymgr.NewManager(cfg, logger, walletManager)
@@ -118,9 +139,9 @@ func main() {
 
 		// Validate wallet manager
 		for _, chain := range cfg.Chains {
-			if err := walletManager.ValidateWalletExists(chain.ChainID); err != nil {
+			if err := walletManager.ValidateWalletExists(chain.GetChainID()); err != nil {
 				logger.Warn("Wallet validation warning",
-					zap.String("chain", chain.Name),
+					zap.String("chain", chain.GetName()),
 					zap.Error(err),
 				)
 			}

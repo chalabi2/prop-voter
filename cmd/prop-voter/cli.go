@@ -11,6 +11,7 @@ import (
 	"prop-voter/internal/binmgr"
 	"prop-voter/internal/keymgr"
 	"prop-voter/internal/models"
+	"prop-voter/internal/registry"
 	"prop-voter/internal/wallet"
 
 	"go.uber.org/zap"
@@ -63,7 +64,9 @@ func handleBinaryCommand(args []string, cfg *config.Config, logger *zap.Logger) 
 		return fmt.Errorf("binary command requires a subcommand (list, update, check)")
 	}
 
-	binManager := binmgr.NewManager(cfg, logger)
+	// Initialize registry manager for Chain Registry support
+	registryManager := registry.NewManager(logger)
+	binManager := binmgr.NewManager(cfg, logger, registryManager)
 
 	switch args[0] {
 	case "list":
@@ -74,6 +77,23 @@ func handleBinaryCommand(args []string, cfg *config.Config, logger *zap.Logger) 
 		return handleBinaryCheck(binManager)
 	default:
 		return fmt.Errorf("unknown binary command: %s", args[0])
+	}
+}
+
+func handleRegistryCommand(args []string, registryManager *registry.Manager, logger *zap.Logger) error {
+	if len(args) < 1 {
+		return fmt.Errorf("registry command requires a subcommand (list, info, clear-cache)")
+	}
+
+	switch args[0] {
+	case "list":
+		return handleRegistryList(registryManager)
+	case "info":
+		return handleRegistryInfo(args[1:], registryManager, logger)
+	case "clear-cache":
+		return handleRegistryClearCache(registryManager)
+	default:
+		return fmt.Errorf("unknown registry command: %s", args[0])
 	}
 }
 
@@ -239,5 +259,90 @@ func handleBinaryCheck(binManager *binmgr.Manager) error {
 		fmt.Printf("%s %s (version: %s)\n", exists, binary.Name, binary.Version)
 	}
 
+	return nil
+}
+
+// Registry command handlers
+
+func handleRegistryList(registryManager *registry.Manager) error {
+	chains := registryManager.ListSupportedChains()
+
+	fmt.Printf("Supported Chain Registry chains (%d total):\n\n", len(chains))
+
+	// Group chains for better display
+	const perColumn = 4
+	for i := 0; i < len(chains); i += perColumn {
+		for j := 0; j < perColumn && i+j < len(chains); j++ {
+			fmt.Printf("%-20s", chains[i+j])
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("\nUsage in config.yaml:")
+	fmt.Println("chains:")
+	fmt.Println("  - chain_name: \"osmosis\"")
+	fmt.Println("    rpc: \"https://rpc-osmosis.example.com\"")
+	fmt.Println("    rest: \"https://rest-osmosis.example.com\"")
+	fmt.Println("    wallet_key: \"my-osmosis-key\"")
+	fmt.Println("    # All other fields auto-discovered!")
+
+	return nil
+}
+
+func handleRegistryInfo(args []string, registryManager *registry.Manager, logger *zap.Logger) error {
+	if len(args) < 1 {
+		return fmt.Errorf("info command requires a chain name")
+	}
+
+	chainName := args[0]
+	client := registry.NewClient(logger)
+
+	ctx := context.Background()
+	chainInfo, err := client.GetChainInfo(ctx, chainName)
+	if err != nil {
+		return fmt.Errorf("failed to fetch chain info for %s: %w", chainName, err)
+	}
+
+	fmt.Printf("Chain Registry Information for '%s':\n\n", chainName)
+	fmt.Printf("  Pretty Name:     %s\n", chainInfo.PrettyName)
+	fmt.Printf("  Chain ID:        %s\n", chainInfo.ChainID)
+	fmt.Printf("  Bech32 Prefix:   %s\n", chainInfo.Bech32Prefix)
+	fmt.Printf("  Daemon Name:     %s\n", chainInfo.DaemonName)
+	fmt.Printf("  Staking Denom:   %s\n", chainInfo.Denom)
+	fmt.Printf("  Version:         %s\n", chainInfo.Version)
+	fmt.Printf("  Git Repository:  %s\n", chainInfo.GitRepo)
+
+	if chainInfo.LogoURL != "" {
+		fmt.Printf("  Logo URL:        %s\n", chainInfo.LogoURL)
+	}
+
+	if chainInfo.BinaryURL != "" {
+		fmt.Printf("  Binary URL:      %s\n", chainInfo.BinaryURL)
+
+		// Show binary info if available
+		binaryInfo, err := client.GetBinaryInfo(chainInfo)
+		if err == nil {
+			fmt.Printf("\n  Binary Information:\n")
+			fmt.Printf("    Owner:         %s\n", binaryInfo.Owner)
+			fmt.Printf("    Repository:    %s\n", binaryInfo.Repo)
+			fmt.Printf("    Filename:      %s\n", binaryInfo.FileName)
+		}
+	} else {
+		fmt.Printf("  Binary URL:      Not available for current platform (%s/%s)\n",
+			"linux", "amd64") // Could detect runtime.GOOS/GOARCH
+	}
+
+	fmt.Printf("\nExample config.yaml entry:\n")
+	fmt.Printf("- chain_name: \"%s\"\n", chainName)
+	fmt.Printf("  rpc: \"https://rpc-%s.example.com\"\n", chainName)
+	fmt.Printf("  rest: \"https://rest-%s.example.com\"\n", chainName)
+	fmt.Printf("  wallet_key: \"my-%s-key\"\n", chainName)
+
+	return nil
+}
+
+func handleRegistryClearCache(registryManager *registry.Manager) error {
+	registryManager.ClearCache()
+	fmt.Println("Chain Registry cache cleared successfully.")
 	return nil
 }

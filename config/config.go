@@ -39,16 +39,38 @@ type SecurityConfig struct {
 
 // ChainConfig represents a single Cosmos chain configuration
 type ChainConfig struct {
+	// New simplified format using Chain Registry
+	ChainRegistryName string `mapstructure:"chain_name"` // Chain Registry identifier (e.g., "osmosis")
+
+	// Required fields for both formats
+	RPC       string `mapstructure:"rpc"`
+	REST      string `mapstructure:"rest"`
+	WalletKey string `mapstructure:"wallet_key"`
+
+	// Legacy format fields (optional when using Chain Registry)
 	Name       string     `mapstructure:"name"`
 	ChainID    string     `mapstructure:"chain_id"`
-	RPC        string     `mapstructure:"rpc"`
-	REST       string     `mapstructure:"rest"`
 	Denom      string     `mapstructure:"denom"`
 	Prefix     string     `mapstructure:"prefix"`
 	CLIName    string     `mapstructure:"cli_name"`
-	WalletKey  string     `mapstructure:"wallet_key"`
-	LogoURL    string     `mapstructure:"logo_url"` // Chain logo URL for Discord embeds
+	LogoURL    string     `mapstructure:"logo_url"`
 	BinaryRepo BinaryRepo `mapstructure:"binary_repo"`
+
+	// Runtime fields populated from Chain Registry (not in config file)
+	RegistryInfo *ChainRegistryInfo `mapstructure:"-"`
+}
+
+// ChainRegistryInfo holds information fetched from Chain Registry
+type ChainRegistryInfo struct {
+	PrettyName   string
+	ChainID      string
+	Bech32Prefix string
+	DaemonName   string
+	Denom        string
+	LogoURL      string
+	GitRepo      string
+	Version      string
+	BinaryURL    string
 }
 
 // BinaryRepo represents GitHub repository information for binary management
@@ -121,4 +143,64 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// Helper methods for ChainConfig
+
+// UsesChainRegistry returns true if this chain uses Chain Registry format
+func (c *ChainConfig) UsesChainRegistry() bool {
+	return c.ChainRegistryName != ""
+}
+
+// GetName returns the effective chain name
+func (c *ChainConfig) GetName() string {
+	if c.UsesChainRegistry() && c.RegistryInfo != nil {
+		return c.RegistryInfo.PrettyName
+	}
+	return c.Name
+}
+
+// GetChainID returns the effective chain ID
+func (c *ChainConfig) GetChainID() string {
+	if c.UsesChainRegistry() && c.RegistryInfo != nil {
+		return c.RegistryInfo.ChainID
+	}
+	return c.ChainID
+}
+
+// GetCLIName returns the effective CLI/daemon name
+func (c *ChainConfig) GetCLIName() string {
+	if c.UsesChainRegistry() && c.RegistryInfo != nil {
+		return c.RegistryInfo.DaemonName
+	}
+	return c.CLIName
+}
+
+// GetDenom returns the effective staking denom
+func (c *ChainConfig) GetDenom() string {
+	if c.UsesChainRegistry() && c.RegistryInfo != nil {
+		return c.RegistryInfo.Denom
+	}
+	return c.Denom
+}
+
+// GetPrefix returns the effective bech32 prefix
+func (c *ChainConfig) GetPrefix() string {
+	if c.UsesChainRegistry() && c.RegistryInfo != nil {
+		return c.RegistryInfo.Bech32Prefix
+	}
+	return c.Prefix
+}
+
+// GetLogoURL returns the effective logo URL
+func (c *ChainConfig) GetLogoURL() string {
+	if c.UsesChainRegistry() && c.RegistryInfo != nil {
+		return c.RegistryInfo.LogoURL
+	}
+	return c.LogoURL
+}
+
+// PopulateFromRegistry sets registry info for this chain
+func (c *ChainConfig) PopulateFromRegistry(registryInfo *ChainRegistryInfo) {
+	c.RegistryInfo = registryInfo
 }

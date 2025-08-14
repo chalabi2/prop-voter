@@ -34,7 +34,45 @@ key_manager:
   backup_keys: true
   encrypt_keys: true
 
+# === CHAIN CONFIGURATION ===
+# Prop-Voter supports two configuration formats:
+# 1. Chain Registry format (recommended) - simplified config with auto-discovery
+# 2. Legacy format - full manual configuration for unsupported chains
+
 chains:
+  # === CHAIN REGISTRY FORMAT (RECOMMENDED) ===
+  # Just 4 lines per chain! Everything else auto-discovered from official Cosmos Chain Registry
+
+  # Osmosis - Chain Registry format
+  - chain_name: "osmosis" # Chain Registry identifier (case-sensitive)
+    rpc: "https://rpc-osmosis.blockapsis.com"
+    rest: "https://lcd-osmosis.blockapsis.com"
+    wallet_key: "my-osmosis-key"
+    # Auto-discovered: chain_id="osmosis-1", daemon="osmosisd", denom="uosmo",
+    #                  prefix="osmo", version, binary_url, logo_url, etc.
+
+  # Juno - Chain Registry format
+  - chain_name: "juno"
+    rpc: "https://rpc-juno.blockapsis.com"
+    rest: "https://lcd-juno.blockapsis.com"
+    wallet_key: "my-juno-key"
+
+  # Akash - Chain Registry format
+  - chain_name: "akash"
+    rpc: "https://rpc-akash.blockapsis.com"
+    rest: "https://lcd-akash.blockapsis.com"
+    wallet_key: "my-akash-key"
+
+  # Stargaze - Chain Registry format
+  - chain_name: "stargaze"
+    rpc: "https://rpc-stargaze.blockapsis.com"
+    rest: "https://lcd-stargaze.blockapsis.com"
+    wallet_key: "my-stargaze-key"
+
+  # === LEGACY FORMAT ===
+  # Use this format for chains not in the Chain Registry or when you need full control
+
+  # Cosmos Hub - Legacy format (for servers with binary compatibility issues)
   - name: "Cosmos Hub"
     chain_id: "cosmoshub-4"
     rpc: "https://rpc-cosmoshub.blockapsis.com"
@@ -43,36 +81,34 @@ chains:
     prefix: "cosmos"
     cli_name: "gaiad"
     wallet_key: "my-cosmos-key"
+    logo_url: "https://raw.githubusercontent.com/cosmos/chain-registry/master/cosmoshub/images/atom.png"
     binary_repo:
-      enabled: true
+      enabled: false # Disable if binary has compatibility issues
       owner: "cosmos"
       repo: "gaia"
       asset_pattern: "*linux-amd64*" # Adjust for your platform
 
-  - name: "Osmosis"
-    chain_id: "osmosis-1"
-    rpc: "https://rpc-osmosis.blockapsis.com"
-    rest: "https://lcd-osmosis.blockapsis.com"
-    denom: "uosmo"
-    prefix: "osmo"
-    cli_name: "osmosisd"
-    wallet_key: "my-osmosis-key"
-    binary_repo:
-      enabled: true
-      owner: "osmosis-labs"
-      repo: "osmosis"
-      asset_pattern: "*linux-amd64*"
 
-  - name: "Juno"
-    chain_id: "juno-1"
-    rpc: "https://rpc-juno.blockapsis.com"
-    rest: "https://lcd-juno.blockapsis.com"
-    denom: "ujuno"
-    prefix: "juno"
-    cli_name: "junod"
-    wallet_key: "my-juno-key"
-    binary_repo:
-      enabled: true
-      owner: "CosmosContracts"
-      repo: "juno"
-      asset_pattern: "*linux-amd64*"
+  # Custom chain - Legacy format
+  # - name: "Custom Chain"
+  #   chain_id: "custom-1"
+  #   rpc: "https://rpc-custom.example.com"
+  #   rest: "https://lcd-custom.example.com"
+  #   denom: "ucustom"
+  #   prefix: "custom"
+  #   cli_name: "customd"
+  #   wallet_key: "my-custom-key"
+  #   logo_url: "https://example.com/custom-logo.png"
+  #   binary_repo:
+  #     enabled: true
+  #     owner: "custom-org"
+  #     repo: "custom-chain"
+  #     asset_pattern: "*linux-amd64*"
+# === SUPPORTED CHAIN REGISTRY CHAINS ===
+# Use these exact chain_name values for Chain Registry format:
+# cosmoshub, osmosis, juno, akash, kujira, stargaze, injective, stride, evmos,
+# kava, secret, terra2, persistence, sommelier, gravity-bridge, crescent,
+# chihuahua, comdex, desmos, regen, sentinel, cyber, iris, fetchai, archway,
+# neutron, noble, composable, saga, dymension, celestia, and many more!
+#
+# Get the complete list: ./prop-voter -registry list

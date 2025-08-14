@@ -31,7 +31,7 @@ func (v *Voter) Vote(chainID, proposalID, option string) (string, error) {
 	// Find the chain configuration
 	var chainConfig *config.ChainConfig
 	for _, chain := range v.config.Chains {
-		if chain.ChainID == chainID {
+		if chain.GetChainID() == chainID {
 			chainConfig = &chain
 			break
 		}
@@ -42,7 +42,7 @@ func (v *Voter) Vote(chainID, proposalID, option string) (string, error) {
 	}
 
 	v.logger.Info("Submitting vote",
-		zap.String("chain", chainConfig.Name),
+		zap.String("chain", chainConfig.GetName()),
 		zap.String("chain_id", chainID),
 		zap.String("proposal_id", proposalID),
 		zap.String("option", option),
@@ -73,7 +73,7 @@ func (v *Voter) Vote(chainID, proposalID, option string) (string, error) {
 	}
 
 	v.logger.Info("Vote submitted successfully",
-		zap.String("chain", chainConfig.Name),
+		zap.String("chain", chainConfig.GetName()),
 		zap.String("proposal_id", proposalID),
 		zap.String("tx_hash", txHash),
 	)
@@ -88,17 +88,18 @@ func (v *Voter) buildVoteCommand(chain *config.ChainConfig, proposalID, option s
 		proposalID,
 		option,
 		"--from", chain.WalletKey,
-		"--chain-id", chain.ChainID,
+		"--chain-id", chain.GetChainID(),
 		"--node", chain.RPC,
 		"--gas", "auto",
 		"--gas-adjustment", "1.3",
 		"--fees", v.calculateFees(chain),
+		"--keyring-backend", "test",
 		"--yes",
 		"--output", "json",
 	}
 
 	// Use managed binary path if available
-	cliPath := v.getBinaryPath(chain.CLIName)
+	cliPath := v.getBinaryPath(chain.GetCLIName())
 	return exec.Command(cliPath, args...)
 }
 
@@ -123,12 +124,12 @@ func (v *Voter) calculateFees(chain *config.ChainConfig) string {
 		"juno-1":      "5000ujuno",
 	}
 
-	if fee, exists := feeMap[chain.ChainID]; exists {
+	if fee, exists := feeMap[chain.GetChainID()]; exists {
 		return fee
 	}
 
 	// Default fallback
-	return fmt.Sprintf("5000%s", chain.Denom)
+	return fmt.Sprintf("5000%s", chain.GetDenom())
 }
 
 // parseTxHash extracts the transaction hash from CLI output
@@ -168,7 +169,7 @@ func (v *Voter) parseTxHash(output string) string {
 
 // ValidateChainCLI validates that the CLI tool for a chain is available
 func (v *Voter) ValidateChainCLI(chain config.ChainConfig) error {
-	cliPath := v.getBinaryPath(chain.CLIName)
+	cliPath := v.getBinaryPath(chain.GetCLIName())
 	cmd := exec.Command(cliPath, "version")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -186,22 +187,22 @@ func (v *Voter) ValidateChainCLI(chain config.ChainConfig) error {
 
 // ValidateWalletKey validates that the wallet key exists for a chain
 func (v *Voter) ValidateWalletKey(chain config.ChainConfig) error {
-	cliPath := v.getBinaryPath(chain.CLIName)
-	cmd := exec.Command(cliPath, "keys", "show", chain.WalletKey, "--address")
+	cliPath := v.getBinaryPath(chain.GetCLIName())
+	cmd := exec.Command(cliPath, "keys", "show", chain.WalletKey, "--address", "--keyring-backend", "test")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("wallet key %s not found for chain %s: %w - output: %s",
-			chain.WalletKey, chain.Name, err, string(output))
+			chain.WalletKey, chain.GetName(), err, string(output))
 	}
 
 	address := strings.TrimSpace(string(output))
-	if !strings.HasPrefix(address, chain.Prefix) {
+	if !strings.HasPrefix(address, chain.GetPrefix()) {
 		return fmt.Errorf("wallet address %s does not match expected prefix %s for chain %s",
-			address, chain.Prefix, chain.Name)
+			address, chain.GetPrefix(), chain.GetName())
 	}
 
 	v.logger.Info("Wallet validation successful",
-		zap.String("chain", chain.Name),
+		zap.String("chain", chain.GetName()),
 		zap.String("key", chain.WalletKey),
 		zap.String("address", address),
 	)
@@ -213,11 +214,11 @@ func (v *Voter) ValidateWalletKey(chain config.ChainConfig) error {
 func (v *Voter) ValidateAllChains() error {
 	for _, chain := range v.config.Chains {
 		if err := v.ValidateChainCLI(chain); err != nil {
-			return fmt.Errorf("validation failed for chain %s: %w", chain.Name, err)
+			return fmt.Errorf("validation failed for chain %s: %w", chain.GetName(), err)
 		}
 
 		if err := v.ValidateWalletKey(chain); err != nil {
-			return fmt.Errorf("wallet validation failed for chain %s: %w", chain.Name, err)
+			return fmt.Errorf("wallet validation failed for chain %s: %w", chain.GetName(), err)
 		}
 	}
 

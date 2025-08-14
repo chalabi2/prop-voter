@@ -132,6 +132,31 @@ chains:
 	if chain.WalletKey != "test-key" {
 		t.Errorf("Expected wallet key 'test-key', got '%s'", chain.WalletKey)
 	}
+
+	// Test helper methods for legacy format
+	if chain.UsesChainRegistry() {
+		t.Error("Expected legacy chain not to use Chain Registry")
+	}
+
+	if chain.GetName() != "Test Chain" {
+		t.Errorf("Expected GetName() to return 'Test Chain', got '%s'", chain.GetName())
+	}
+
+	if chain.GetChainID() != "test-1" {
+		t.Errorf("Expected GetChainID() to return 'test-1', got '%s'", chain.GetChainID())
+	}
+
+	if chain.GetCLIName() != "testd" {
+		t.Errorf("Expected GetCLIName() to return 'testd', got '%s'", chain.GetCLIName())
+	}
+
+	if chain.GetDenom() != "utest" {
+		t.Errorf("Expected GetDenom() to return 'utest', got '%s'", chain.GetDenom())
+	}
+
+	if chain.GetPrefix() != "test" {
+		t.Errorf("Expected GetPrefix() to return 'test', got '%s'", chain.GetPrefix())
+	}
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -218,5 +243,258 @@ discord:
 	_, err = LoadConfig(tmpFile.Name())
 	if err == nil {
 		t.Error("Expected error when loading invalid YAML config file")
+	}
+}
+
+func TestLoadConfigChainRegistry(t *testing.T) {
+	// Create a config file with Chain Registry format
+	configContent := `
+discord:
+  token: "test-token"
+  channel_id: "123456789"
+  allowed_user_id: "987654321"
+
+database:
+  path: "./test.db"
+
+security:
+  encryption_key: "test-encryption-key-32-characters"
+  vote_secret: "test-secret"
+
+chains:
+  # Chain Registry format
+  - chain_name: "osmosis"
+    rpc: "https://rpc-osmosis.example.com"
+    rest: "https://rest-osmosis.example.com"
+    wallet_key: "osmosis-key"
+  
+  # Legacy format
+  - name: "Custom Chain"
+    chain_id: "custom-1"
+    rpc: "http://localhost:26657"
+    rest: "http://localhost:1317"
+    denom: "ucustom"
+    prefix: "custom"
+    cli_name: "customd"
+    wallet_key: "custom-key"
+`
+
+	tmpFile, err := os.CreateTemp("", "test-config-registry-*.yaml")
+	if err != nil {
+		t.Fatalf("Failed to create temp config file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(configContent); err != nil {
+		t.Fatalf("Failed to write config content: %v", err)
+	}
+	tmpFile.Close()
+
+	// Test loading the config
+	cfg, err := LoadConfig(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Test that we have 2 chains
+	if len(cfg.Chains) != 2 {
+		t.Fatalf("Expected 2 chains, got %d", len(cfg.Chains))
+	}
+
+	// Test Chain Registry format chain
+	registryChain := cfg.Chains[0]
+	if !registryChain.UsesChainRegistry() {
+		t.Error("Expected first chain to use Chain Registry")
+	}
+
+	if registryChain.ChainRegistryName != "osmosis" {
+		t.Errorf("Expected chain registry name 'osmosis', got '%s'", registryChain.ChainRegistryName)
+	}
+
+	if registryChain.RPC != "https://rpc-osmosis.example.com" {
+		t.Errorf("Expected RPC 'https://rpc-osmosis.example.com', got '%s'", registryChain.RPC)
+	}
+
+	if registryChain.REST != "https://rest-osmosis.example.com" {
+		t.Errorf("Expected REST 'https://rest-osmosis.example.com', got '%s'", registryChain.REST)
+	}
+
+	if registryChain.WalletKey != "osmosis-key" {
+		t.Errorf("Expected wallet key 'osmosis-key', got '%s'", registryChain.WalletKey)
+	}
+
+	// Test that legacy fields are empty for Chain Registry format
+	if registryChain.Name != "" {
+		t.Errorf("Expected empty name for Chain Registry format, got '%s'", registryChain.Name)
+	}
+
+	if registryChain.ChainID != "" {
+		t.Errorf("Expected empty chain ID for Chain Registry format, got '%s'", registryChain.ChainID)
+	}
+
+	// Test legacy format chain
+	legacyChain := cfg.Chains[1]
+	if legacyChain.UsesChainRegistry() {
+		t.Error("Expected second chain not to use Chain Registry")
+	}
+
+	if legacyChain.ChainRegistryName != "" {
+		t.Errorf("Expected empty chain registry name for legacy format, got '%s'", legacyChain.ChainRegistryName)
+	}
+
+	if legacyChain.Name != "Custom Chain" {
+		t.Errorf("Expected name 'Custom Chain', got '%s'", legacyChain.Name)
+	}
+
+	if legacyChain.ChainID != "custom-1" {
+		t.Errorf("Expected chain ID 'custom-1', got '%s'", legacyChain.ChainID)
+	}
+}
+
+func TestChainConfigHelperMethods(t *testing.T) {
+	// Test Chain Registry format with populated registry info
+	registryChain := ChainConfig{
+		ChainRegistryName: "osmosis",
+		RPC:               "https://rpc.example.com",
+		REST:              "https://rest.example.com",
+		WalletKey:         "osmosis-key",
+		RegistryInfo: &ChainRegistryInfo{
+			PrettyName:   "Osmosis",
+			ChainID:      "osmosis-1",
+			Bech32Prefix: "osmo",
+			DaemonName:   "osmosisd",
+			Denom:        "uosmo",
+			LogoURL:      "https://example.com/logo.png",
+		},
+	}
+
+	if !registryChain.UsesChainRegistry() {
+		t.Error("Expected chain to use Chain Registry")
+	}
+
+	if registryChain.GetName() != "Osmosis" {
+		t.Errorf("Expected GetName() to return 'Osmosis', got '%s'", registryChain.GetName())
+	}
+
+	if registryChain.GetChainID() != "osmosis-1" {
+		t.Errorf("Expected GetChainID() to return 'osmosis-1', got '%s'", registryChain.GetChainID())
+	}
+
+	if registryChain.GetCLIName() != "osmosisd" {
+		t.Errorf("Expected GetCLIName() to return 'osmosisd', got '%s'", registryChain.GetCLIName())
+	}
+
+	if registryChain.GetDenom() != "uosmo" {
+		t.Errorf("Expected GetDenom() to return 'uosmo', got '%s'", registryChain.GetDenom())
+	}
+
+	if registryChain.GetPrefix() != "osmo" {
+		t.Errorf("Expected GetPrefix() to return 'osmo', got '%s'", registryChain.GetPrefix())
+	}
+
+	if registryChain.GetLogoURL() != "https://example.com/logo.png" {
+		t.Errorf("Expected GetLogoURL() to return 'https://example.com/logo.png', got '%s'", registryChain.GetLogoURL())
+	}
+
+	// Test Chain Registry format without populated registry info (fallback to legacy)
+	registryChainEmpty := ChainConfig{
+		ChainRegistryName: "osmosis",
+		Name:              "Fallback Name",
+		ChainID:           "fallback-1",
+		CLIName:           "fallbackd",
+		Denom:             "ufallback",
+		Prefix:            "fallback",
+		LogoURL:           "https://example.com/fallback.png",
+	}
+
+	if registryChainEmpty.GetName() != "Fallback Name" {
+		t.Errorf("Expected GetName() to fallback to 'Fallback Name', got '%s'", registryChainEmpty.GetName())
+	}
+
+	if registryChainEmpty.GetChainID() != "fallback-1" {
+		t.Errorf("Expected GetChainID() to fallback to 'fallback-1', got '%s'", registryChainEmpty.GetChainID())
+	}
+
+	// Test legacy format
+	legacyChain := ChainConfig{
+		Name:      "Legacy Chain",
+		ChainID:   "legacy-1",
+		CLIName:   "legacyd",
+		Denom:     "ulegacy",
+		Prefix:    "legacy",
+		WalletKey: "legacy-key",
+		LogoURL:   "https://example.com/legacy.png",
+	}
+
+	if legacyChain.UsesChainRegistry() {
+		t.Error("Expected legacy chain not to use Chain Registry")
+	}
+
+	if legacyChain.GetName() != "Legacy Chain" {
+		t.Errorf("Expected GetName() to return 'Legacy Chain', got '%s'", legacyChain.GetName())
+	}
+
+	if legacyChain.GetChainID() != "legacy-1" {
+		t.Errorf("Expected GetChainID() to return 'legacy-1', got '%s'", legacyChain.GetChainID())
+	}
+
+	if legacyChain.GetCLIName() != "legacyd" {
+		t.Errorf("Expected GetCLIName() to return 'legacyd', got '%s'", legacyChain.GetCLIName())
+	}
+
+	if legacyChain.GetDenom() != "ulegacy" {
+		t.Errorf("Expected GetDenom() to return 'ulegacy', got '%s'", legacyChain.GetDenom())
+	}
+
+	if legacyChain.GetPrefix() != "legacy" {
+		t.Errorf("Expected GetPrefix() to return 'legacy', got '%s'", legacyChain.GetPrefix())
+	}
+
+	if legacyChain.GetLogoURL() != "https://example.com/legacy.png" {
+		t.Errorf("Expected GetLogoURL() to return 'https://example.com/legacy.png', got '%s'", legacyChain.GetLogoURL())
+	}
+}
+
+func TestPopulateFromRegistry(t *testing.T) {
+	chain := ChainConfig{
+		ChainRegistryName: "osmosis",
+		RPC:               "https://rpc.example.com",
+		REST:              "https://rest.example.com",
+		WalletKey:         "osmosis-key",
+	}
+
+	registryInfo := &ChainRegistryInfo{
+		PrettyName:   "Osmosis",
+		ChainID:      "osmosis-1",
+		Bech32Prefix: "osmo",
+		DaemonName:   "osmosisd",
+		Denom:        "uosmo",
+		LogoURL:      "https://example.com/logo.png",
+		GitRepo:      "https://github.com/osmosis-labs/osmosis/",
+		Version:      "v15.0.0",
+		BinaryURL:    "https://example.com/osmosisd",
+	}
+
+	chain.PopulateFromRegistry(registryInfo)
+
+	if chain.RegistryInfo == nil {
+		t.Fatal("Expected registry info to be populated")
+	}
+
+	if chain.RegistryInfo.PrettyName != "Osmosis" {
+		t.Errorf("Expected pretty name 'Osmosis', got '%s'", chain.RegistryInfo.PrettyName)
+	}
+
+	if chain.RegistryInfo.ChainID != "osmosis-1" {
+		t.Errorf("Expected chain ID 'osmosis-1', got '%s'", chain.RegistryInfo.ChainID)
+	}
+
+	// Test that helper methods now use registry info
+	if chain.GetName() != "Osmosis" {
+		t.Errorf("Expected GetName() to return 'Osmosis', got '%s'", chain.GetName())
+	}
+
+	if chain.GetChainID() != "osmosis-1" {
+		t.Errorf("Expected GetChainID() to return 'osmosis-1', got '%s'", chain.GetChainID())
 	}
 }
