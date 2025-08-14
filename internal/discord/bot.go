@@ -683,10 +683,10 @@ func (b *Bot) queryVoteTally(chainConfig *config.ChainConfig, proposalID string)
 
 // TallyResponse represents the raw tally data from the API
 type TallyResponse struct {
-	Yes        string `json:"yes"`
-	No         string `json:"no"`
-	Abstain    string `json:"abstain"`
-	NoWithVeto string `json:"no_with_veto"`
+	Yes        string `json:"yes_count"`
+	No         string `json:"no_count"`
+	Abstain    string `json:"abstain_count"`
+	NoWithVeto string `json:"no_with_veto_count"`
 }
 
 // tryQueryTally attempts to query the tally using a specific API version
@@ -751,16 +751,28 @@ func (b *Bot) formatTokenAmount(amount string, chainConfig *config.ChainConfig) 
 
 	// Convert string to float for formatting
 	if value, err := strconv.ParseFloat(amount, 64); err == nil {
-		// Convert from base units (usually 6 decimals) to main units
-		value = value / 1000000
+		// Get the correct decimal precision for this chain
+		decimals := 6 // Default to 6 decimals
+		if chainConfig.UsesChainRegistry() && chainConfig.RegistryInfo != nil {
+			decimals = chainConfig.RegistryInfo.Decimals
+		}
+
+		// Convert from base units to main units using the chain's decimal precision
+		divisor := 1.0
+		for i := 0; i < decimals; i++ {
+			divisor *= 10
+		}
+		value = value / divisor
 
 		// Format with appropriate precision
 		if value >= 1000000 {
 			return fmt.Sprintf("%.2fM", value/1000000)
 		} else if value >= 1000 {
 			return fmt.Sprintf("%.2fK", value/1000)
-		} else {
+		} else if value >= 1 {
 			return fmt.Sprintf("%.2f", value)
+		} else {
+			return fmt.Sprintf("%.4f", value)
 		}
 	}
 

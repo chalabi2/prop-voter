@@ -20,6 +20,7 @@ type ChainInfo struct {
 	Bech32Prefix string `json:"bech32_prefix"`
 	DaemonName   string `json:"daemon_name"`
 	Denom        string `json:"-"` // Extracted from staking tokens
+	Decimals     int    `json:"-"` // Token decimal precision
 	LogoURL      string `json:"-"` // Extracted from logo_URIs
 	GitRepo      string `json:"-"` // Extracted from codebase
 	Version      string `json:"-"` // Extracted from codebase
@@ -116,6 +117,7 @@ func (c *Client) GetChainInfo(ctx context.Context, chainName string) (*ChainInfo
 		DaemonName:   registryResp.DaemonName,
 		GitRepo:      registryResp.Codebase.GitRepo,
 		Version:      registryResp.Codebase.RecommendedVersion,
+		Decimals:     6, // Default to 6 decimals, will be updated from assetlist
 	}
 
 	// Extract staking denom
@@ -136,6 +138,14 @@ func (c *Client) GetChainInfo(ctx context.Context, chainName string) (*ChainInfo
 		chainInfo.BinaryURL = binaryURL
 	}
 
+	// Fetch decimal precision from assetlist
+	if err := c.fetchAssetInfo(ctx, chainName, chainInfo); err != nil {
+		c.logger.Warn("Failed to fetch asset info, using default decimals",
+			zap.String("chain", chainName),
+			zap.Error(err),
+		)
+	}
+
 	// Cache the result
 	c.cache[chainName] = chainInfo
 
@@ -145,9 +155,75 @@ func (c *Client) GetChainInfo(ctx context.Context, chainName string) (*ChainInfo
 		zap.String("daemon", chainInfo.DaemonName),
 		zap.String("version", chainInfo.Version),
 		zap.String("binary_url", chainInfo.BinaryURL),
+		zap.Int("decimals", chainInfo.Decimals),
 	)
 
 	return chainInfo, nil
+}
+
+// AssetListResponse represents the assetlist.json response
+type AssetListResponse struct {
+	Assets []struct {
+		Base       string `json:"base"`
+		DenomUnits []struct {
+			Denom    string `json:"denom"`
+			Exponent int    `json:"exponent"`
+		} `json:"denom_units"`
+	} `json:"assets"`
+}
+
+// fetchAssetInfo fetches asset information including decimal precision
+func (c *Client) fetchAssetInfo(ctx context.Context, chainName string, chainInfo *ChainInfo) error {
+	url := fmt.Sprintf("%s/%s/assetlist.json", c.baseURL, chainName)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch assetlist: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("assetlist returned status %d", resp.StatusCode)
+	}
+
+	var assetResp AssetListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&assetResp); err != nil {
+		return fmt.Errorf("failed to decode assetlist response: %w", err)
+	}
+
+	// Find the main staking token and extract its decimal precision
+	for _, asset := range assetResp.Assets {
+		// Look for the asset that matches our staking denom
+		if asset.Base == chainInfo.Denom {
+			// Find the display denomination with highest exponent
+			maxExponent := 0
+			for _, denomUnit := range asset.DenomUnits {
+				if denomUnit.Exponent > maxExponent {
+					maxExponent = denomUnit.Exponent
+				}
+			}
+			if maxExponent > 0 {
+				chainInfo.Decimals = maxExponent
+				c.logger.Debug("Found decimal precision from assetlist",
+					zap.String("chain", chainName),
+					zap.String("denom", chainInfo.Denom),
+					zap.Int("decimals", maxExponent),
+				)
+				return nil
+			}
+		}
+	}
+
+	c.logger.Debug("Asset not found in assetlist, using default decimals",
+		zap.String("chain", chainName),
+		zap.String("denom", chainInfo.Denom),
+	)
+	return nil
 }
 
 // GetBinaryInfo extracts binary download information

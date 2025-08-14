@@ -67,6 +67,7 @@ type ChainRegistryInfo struct {
 	Bech32Prefix string
 	DaemonName   string
 	Denom        string
+	Decimals     int
 	LogoURL      string
 	GitRepo      string
 	Version      string
