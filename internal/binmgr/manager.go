@@ -302,7 +302,33 @@ func (m *Manager) downloadLatestBinary(ctx context.Context, chain *config.ChainC
 			return fmt.Errorf("failed to get binary info from registry: %w", err)
 		}
 
-		return m.downloadBinaryFromURL(ctx, chain, binaryInfo.BinaryURL, binaryInfo.Version)
+		// Check if Chain Registry provides a direct binary URL
+		if binaryInfo.BinaryURL != "" {
+			return m.downloadBinaryFromURL(ctx, chain, binaryInfo.BinaryURL, binaryInfo.Version)
+		}
+
+		// Chain Registry doesn't provide binary URL - fall back to GitHub releases
+		m.logger.Info("No binary URL in Chain Registry, falling back to GitHub releases",
+			zap.String("chain", chain.GetName()),
+			zap.String("repo", binaryInfo.Owner+"/"+binaryInfo.Repo),
+			zap.String("version", binaryInfo.Version),
+		)
+
+		// Convert to legacy-style repo config for GitHub API
+		legacyRepo := config.BinaryRepo{
+			Enabled:      true,
+			Owner:        binaryInfo.Owner,
+			Repo:         binaryInfo.Repo,
+			AssetPattern: fmt.Sprintf("*%s_%s*", runtime.GOOS, runtime.GOARCH), // e.g., *linux_amd64*
+		}
+
+		// Get release and download
+		release, err := m.getLatestRelease(ctx, legacyRepo)
+		if err != nil {
+			return fmt.Errorf("failed to get latest release for Chain Registry fallback: %w", err)
+		}
+
+		return m.downloadBinaryFromRelease(ctx, chain, release)
 	}
 
 	// Legacy format: use GitHub releases
@@ -502,6 +528,11 @@ func (m *Manager) getSpecificRelease(ctx context.Context, repo config.BinaryRepo
 
 // findAssetForPlatform finds the appropriate asset for the current platform
 func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, error) {
+	// Check if release has no assets at all
+	if len(assets) == 0 {
+		return nil, fmt.Errorf("no binary assets found in release - this chain may not provide pre-compiled binaries")
+	}
+
 	platformParts := []string{runtime.GOOS, runtime.GOARCH}
 
 	// Common platform mappings
@@ -574,7 +605,19 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 		}
 	}
 
-	return nil, fmt.Errorf("no suitable asset found for platform %s/%s with pattern %s", runtime.GOOS, runtime.GOARCH, pattern)
+	// Collect available asset names for better error reporting
+	var assetNames []string
+	for _, asset := range assets {
+		assetNames = append(assetNames, asset.Name)
+	}
+
+	if pattern != "" {
+		return nil, fmt.Errorf("no suitable asset found for platform %s/%s with pattern '%s'. Available assets: %v",
+			runtime.GOOS, runtime.GOARCH, pattern, assetNames)
+	}
+
+	return nil, fmt.Errorf("no suitable asset found for platform %s/%s. Available assets: %v",
+		runtime.GOOS, runtime.GOARCH, assetNames)
 }
 
 // matchesPattern checks if a string matches a simple pattern (supports * wildcards)

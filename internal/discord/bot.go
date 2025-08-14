@@ -538,14 +538,27 @@ func (b *Bot) interactionHandler(s *discordgo.Session, i *discordgo.InteractionC
 // handleVoteTallyButton handles vote tally button clicks
 func (b *Bot) handleVoteTallyButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Extract chain ID and proposal ID from custom ID
-	parts := strings.Split(i.MessageComponentData().CustomID, "_")
-	if len(parts) < 4 {
-		b.respondWithError(s, i, "Invalid button data")
+	// Format: vote_tally_{chainID}_{proposalID}
+	// But chainID might contain underscores, so we need to be careful
+	customID := i.MessageComponentData().CustomID
+
+	// Remove the "vote_tally_" prefix
+	if !strings.HasPrefix(customID, "vote_tally_") {
+		b.respondWithError(s, i, "Invalid button format")
 		return
 	}
 
-	chainID := parts[2]
-	proposalID := parts[3]
+	remainder := strings.TrimPrefix(customID, "vote_tally_")
+
+	// Find the last underscore to separate proposal ID
+	lastUnderscoreIndex := strings.LastIndex(remainder, "_")
+	if lastUnderscoreIndex == -1 {
+		b.respondWithError(s, i, "Invalid button data format")
+		return
+	}
+
+	chainID := remainder[:lastUnderscoreIndex]
+	proposalID := remainder[lastUnderscoreIndex+1:]
 
 	// Find the chain config
 	var chainConfig *config.ChainConfig
