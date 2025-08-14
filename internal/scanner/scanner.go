@@ -107,42 +107,56 @@ func (s *Scanner) scanAllChains(ctx context.Context) {
 func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error {
 	s.logger.Debug("Scanning chain for proposals", zap.String("chain", chain.Name))
 
-	// Only fetch recent proposals with pagination and filter for active ones
-	// This prevents API overload and compatibility issues
-	// We fetch 25 recent proposals (newest first) which should cover any active governance
-	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals?pagination.limit=25&pagination.reverse=true", chain.REST)
+	// Try v1beta1 with very small pagination first to avoid complex proposals
+	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	proposals, err := s.fetchProposals(ctx, url)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to fetch proposals: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var govResp GovernanceResponse
-	if err := json.Unmarshal(body, &govResp); err != nil {
-		return fmt.Errorf("failed to unmarshal response: %w", err)
+		// If v1beta1 fails due to conversion issues, try v1 endpoint
+		s.logger.Debug("v1beta1 failed, trying v1 endpoint", zap.String("chain", chain.Name), zap.Error(err))
+		urlV1 := fmt.Sprintf("%s/cosmos/gov/v1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
+		proposals, err = s.fetchProposals(ctx, urlV1)
+		if err != nil {
+			return fmt.Errorf("both v1beta1 and v1 endpoints failed: %w", err)
+		}
 	}
 
 	s.logger.Debug("Fetched proposals with pagination",
 		zap.String("chain", chain.Name),
-		zap.Int("proposal_count", len(govResp.Proposals)),
+		zap.Int("proposal_count", len(proposals)),
 	)
 
-	return s.processProposals(chain, govResp.Proposals)
+	return s.processProposals(chain, proposals)
+}
+
+// fetchProposals fetches proposals from a given URL
+func (s *Scanner) fetchProposals(ctx context.Context, url string) ([]ProposalData, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch proposals: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var govResp GovernanceResponse
+	if err := json.Unmarshal(body, &govResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return govResp.Proposals, nil
 }
 
 // processProposals processes the proposals and stores new ones in the database
