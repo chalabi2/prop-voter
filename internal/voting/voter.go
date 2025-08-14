@@ -2,6 +2,7 @@ package voting
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -77,23 +78,33 @@ func (v *Voter) Vote(chainID, proposalID, option string) (string, error) {
 		return "", fmt.Errorf("vote command failed: %w - output: %s", err, string(output))
 	}
 
-	// Parse transaction hash from output
-	txHash := v.parseTxHash(string(output))
-	if txHash == "" {
-		v.logger.Warn("Could not parse transaction hash from output",
+	// Parse transaction response from CLI output
+	txResponse, err := v.parseTxResponse(string(output))
+	if err != nil {
+		v.logger.Warn("Could not parse transaction response",
 			zap.String("output", string(output)),
+			zap.Error(err),
 		)
-		// Return a placeholder hash and log the raw output
 		return "UNKNOWN_HASH_CHECK_LOGS", nil
+	}
+
+	// Check if transaction was successful
+	if txResponse.Code != 0 {
+		v.logger.Error("Transaction failed",
+			zap.Int("code", txResponse.Code),
+			zap.String("codespace", txResponse.Codespace),
+			zap.String("tx_hash", txResponse.TxHash),
+		)
+		return "", fmt.Errorf("transaction failed with code %d: %s", txResponse.Code, txResponse.Codespace)
 	}
 
 	v.logger.Info("Vote submitted successfully",
 		zap.String("chain", chainConfig.GetName()),
 		zap.String("proposal_id", proposalID),
-		zap.String("tx_hash", txHash),
+		zap.String("tx_hash", txResponse.TxHash),
 	)
 
-	return txHash, nil
+	return txResponse.TxHash, nil
 }
 
 // buildVoteCommandWithContext builds the CLI command for voting with timeout context
@@ -169,89 +180,32 @@ func (v *Voter) calculateFees(chain *config.ChainConfig) string {
 	return fmt.Sprintf("5000%s", chain.GetDenom())
 }
 
-// parseTxHash extracts the transaction hash from CLI output
-func (v *Voter) parseTxHash(output string) string {
-	v.logger.Debug("Parsing transaction hash from output", zap.String("raw_output", output))
+// TxResponse represents the essential fields from CLI transaction output
+type TxResponse struct {
+	TxHash    string `json:"txhash"`
+	Code      int    `json:"code"`
+	Codespace string `json:"codespace"`
+}
 
-	// List of patterns to search for transaction hashes
-	patterns := []string{
-		"txhash", "tx_hash", "transaction_hash", "transaction hash",
-		"hash", "tx:", "txn:", "transaction:", "submitted transaction",
-	}
-
+// parseTxResponse parses the CLI JSON output to extract transaction details
+func (v *Voter) parseTxResponse(output string) (*TxResponse, error) {
+	// Try to find JSON in the output (might have other text before/after)
 	lines := strings.Split(output, "\n")
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		lineLower := strings.ToLower(line)
-
-		// Check each pattern
-		for _, pattern := range patterns {
-			if strings.Contains(lineLower, pattern) {
-				v.logger.Debug("Found potential hash line", zap.String("line", line), zap.String("pattern", pattern))
-
-				// Try different extraction methods
-				hash := v.extractHashFromLine(line)
-				if hash != "" {
-					v.logger.Debug("Successfully extracted hash", zap.String("hash", hash))
-					return hash
+		if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
+			var txResp TxResponse
+			if err := json.Unmarshal([]byte(line), &txResp); err == nil {
+				// Validate we got the essential fields
+				if txResp.TxHash != "" {
+					return &txResp, nil
 				}
 			}
 		}
 	}
 
-	// Last resort: look for any 64-character hex string anywhere in output
-	for _, line := range lines {
-		// Find all potential hex strings
-		for i := 0; i <= len(line)-64; i++ {
-			candidate := line[i : i+64]
-			if v.isValidHex(candidate) {
-				v.logger.Debug("Found hex string in output", zap.String("hash", candidate))
-				return strings.ToUpper(candidate)
-			}
-		}
-	}
-
-	v.logger.Warn("No transaction hash found in output", zap.String("output", output))
-	return ""
-}
-
-// extractHashFromLine extracts hash from a line using various methods
-func (v *Voter) extractHashFromLine(line string) string {
-	// Method 1: JSON-like format {"txhash":"hash"}
-	if colonIndex := strings.Index(line, ":"); colonIndex >= 0 {
-		hashPart := line[colonIndex+1:]
-		hash := strings.Trim(hashPart, " \"',}{")
-		if len(hash) == 64 && v.isValidHex(hash) {
-			return strings.ToUpper(hash)
-		}
-	}
-
-	// Method 2: Space-separated format "txhash HASH"
-	fields := strings.Fields(line)
-	for i, field := range fields {
-		if len(field) == 64 && v.isValidHex(field) {
-			return strings.ToUpper(field)
-		}
-		// Check next field if this one is a key
-		if i < len(fields)-1 && len(fields[i+1]) == 64 && v.isValidHex(fields[i+1]) {
-			return strings.ToUpper(fields[i+1])
-		}
-	}
-
-	return ""
-}
-
-// isValidHex checks if a string is a valid hexadecimal hash
-func (v *Voter) isValidHex(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
+	return nil, fmt.Errorf("no valid JSON transaction response found in output")
 }
 
 // ValidateChainCLI validates that the CLI tool for a chain is available

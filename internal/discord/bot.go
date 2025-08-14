@@ -246,9 +246,14 @@ func (b *Bot) handleVoteCommand(channelID string, args []string) {
 		<-done // Wait for completion
 	}
 	if err != nil {
-		// Enhanced error message with more detail
+		// Enhanced error message with more detail (but truncated for Discord)
+		errorDetails := err.Error()
+		if len(errorDetails) > 1500 { // Leave room for other text
+			errorDetails = errorDetails[:1500] + "...\n[Error truncated - check server logs for full details]"
+		}
+
 		errorMsg := fmt.Sprintf("❌ **Vote Failed**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n\n**Error Details:**\n```\n%s\n```",
-			chainID, proposalID, voteOption, err.Error())
+			chainID, proposalID, voteOption, errorDetails)
 		b.sendMessage(channelID, errorMsg)
 		return
 	}
