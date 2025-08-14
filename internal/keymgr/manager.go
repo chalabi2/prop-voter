@@ -64,7 +64,7 @@ func (m *Manager) SetupKeys(ctx context.Context) error {
 // setupChainKeys sets up keys for a specific chain
 func (m *Manager) setupChainKeys(ctx context.Context, chain config.ChainConfig) error {
 	// Get CLI binary path
-	binaryPath := m.getBinaryPath(chain.CLIName)
+	binaryPath := m.getBinaryPath(chain.GetCLIName())
 
 	// Check if key already exists
 	keyExists, err := m.keyExists(binaryPath, chain.WalletKey)
@@ -107,7 +107,7 @@ func (m *Manager) ImportKey(chainName, keyName, mnemonic string) error {
 		return fmt.Errorf("chain %s not found", chainName)
 	}
 
-	binaryPath := m.getBinaryPath(chain.CLIName)
+	binaryPath := m.getBinaryPath(chain.GetCLIName())
 
 	m.logger.Info("Importing key",
 		zap.String("chain", chainName),
@@ -204,7 +204,7 @@ func (m *Manager) ExportKey(chainName, keyName, outputPath string) error {
 
 	if mnemonic == "" {
 		// Try to export from CLI (this might not work for all chains)
-		binaryPath := m.getBinaryPath(chain.CLIName)
+		binaryPath := m.getBinaryPath(chain.GetCLIName())
 		mnemonic, err = m.exportKeyFromCLI(binaryPath, keyName)
 		if err != nil {
 			return fmt.Errorf("failed to export key: %w", err)
@@ -235,7 +235,7 @@ func (m *Manager) ListKeys() ([]KeyInfo, error) {
 	var keys []KeyInfo
 
 	for _, chain := range m.config.Chains {
-		binaryPath := m.getBinaryPath(chain.CLIName)
+		binaryPath := m.getBinaryPath(chain.GetCLIName())
 
 		chainKeys, err := m.listChainKeys(binaryPath, chain.Name)
 		if err != nil {
@@ -257,7 +257,7 @@ func (m *Manager) ValidateKeys() error {
 	var missingKeys []string
 
 	for _, chain := range m.config.Chains {
-		binaryPath := m.getBinaryPath(chain.CLIName)
+		binaryPath := m.getBinaryPath(chain.GetCLIName())
 
 		exists, err := m.keyExists(binaryPath, chain.WalletKey)
 		if err != nil {
