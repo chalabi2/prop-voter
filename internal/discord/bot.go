@@ -225,12 +225,31 @@ func (b *Bot) handleVoteCommand(channelID string, args []string) {
 		return
 	}
 
-	b.sendMessage(channelID, fmt.Sprintf("🗳️ Submitting vote: %s on %s proposal #%s...", voteOption, chainID, proposalID))
+	b.sendMessage(channelID, fmt.Sprintf("🗳️ Submitting vote: **%s** on **%s** proposal **#%s**...", voteOption, chainID, proposalID))
 
-	// Submit vote
-	txHash, err := b.voter.Vote(chainID, proposalID, voteOption)
+	// Submit vote with timeout handling
+	done := make(chan struct{})
+	var txHash string
+	var err error
+
+	go func() {
+		defer close(done)
+		txHash, err = b.voter.Vote(chainID, proposalID, voteOption)
+	}()
+
+	// Send a warning if it's taking too long
+	select {
+	case <-done:
+		// Vote completed (success or failure)
+	case <-time.After(30 * time.Second):
+		b.sendMessage(channelID, "⏳ Vote is taking longer than expected... still processing (max 60s timeout)")
+		<-done // Wait for completion
+	}
 	if err != nil {
-		b.sendMessage(channelID, fmt.Sprintf("❌ Failed to vote: %s", err.Error()))
+		// Enhanced error message with more detail
+		errorMsg := fmt.Sprintf("❌ **Vote Failed**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n\n**Error Details:**\n```\n%s\n```",
+			chainID, proposalID, voteOption, err.Error())
+		b.sendMessage(channelID, errorMsg)
 		return
 	}
 
@@ -247,7 +266,39 @@ func (b *Bot) handleVoteCommand(channelID string, args []string) {
 		b.logger.Error("Failed to store vote", zap.Error(err))
 	}
 
-	b.sendMessage(channelID, fmt.Sprintf("✅ Vote submitted successfully!\nTx Hash: %s", txHash))
+	// Enhanced success message
+	if txHash == "UNKNOWN_HASH_CHECK_LOGS" {
+		// Vote succeeded but couldn't parse hash
+		successMsg := fmt.Sprintf("⚠️ **Vote Likely Submitted Successfully!**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n\n**Note:** Could not parse transaction hash from CLI output. Check server logs for raw output or verify your vote manually on the explorer.",
+			chainID, proposalID, voteOption)
+		b.sendMessage(channelID, successMsg)
+	} else {
+		// Normal success with hash
+		successMsg := fmt.Sprintf("✅ **Vote Submitted Successfully!**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n**Transaction Hash:** `%s`\n\n🔗 [View on Explorer](https://www.mintscan.io/%s/txs/%s)",
+			chainID, proposalID, voteOption, txHash, b.getExplorerChainName(chainID), txHash)
+		b.sendMessage(channelID, successMsg)
+	}
+}
+
+// getExplorerChainName maps chain IDs to their explorer names for Mintscan URLs
+func (b *Bot) getExplorerChainName(chainID string) string {
+	explorerNames := map[string]string{
+		"cosmoshub-4":     "cosmos",
+		"osmosis-1":       "osmosis",
+		"juno-1":          "juno",
+		"akashnet-2":      "akash",
+		"ssc-1":           "saga",
+		"althea_258432-1": "althea",
+		"omniflixhub-1":   "omniflixhub",
+		"quicksilver-2":   "quicksilver",
+	}
+
+	if explorerName, exists := explorerNames[chainID]; exists {
+		return explorerName
+	}
+
+	// Fallback to chain ID if no mapping found
+	return chainID
 }
 
 // showStatus shows voting status for a proposal
