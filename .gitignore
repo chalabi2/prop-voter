@@ -7,6 +7,9 @@
 bin/
 dist/
 
+# Main binary
+prop-voter
+
 # Test binary, built with `go test -c`
 *.test
 
