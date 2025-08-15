@@ -48,6 +48,11 @@ chains:
     rpc: "https://rpc-osmosis.blockapsis.com"
     rest: "https://lcd-osmosis.blockapsis.com"
     wallet_key: "my-osmosis-key"
+    authz:
+      enabled: true
+      granter_addr: "akash1abc123def456ghi789..." # Address to vote on behalf of
+      granter_name: "Validator Wallet" # Optional friendly name
+
     # Auto-discovered: chain_id="osmosis-1", daemon="osmosisd", denom="uosmo",
     #                  prefix="osmo", version, binary_url, logo_url, etc.
 

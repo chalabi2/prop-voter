@@ -1,21 +1,41 @@
-MIT License
+NON-COMMERCIAL SOFTWARE LICENSE
 
-Copyright (c) 2025 Chandra Station
+Copyright (c) 2025 Chandra Station. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software and associated documentation files (the "Software") are made
+available under the following terms and conditions.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+PERMITTED USES:
+You are granted permission to:
 
+- Use the Software for personal, educational, or research purposes
+- Study and examine the source code
+- Modify the Software for your own non-commercial use
+- Distribute unmodified or modified versions for non-commercial purposes
+- Create derivative works for non-commercial purposes
+
+RESTRICTIONS:
+You may NOT:
+
+- Use the Software for commercial purposes
+- Sell, rent, lease, or license the Software or any derivative works
+- Offer the Software as a paid service (SaaS, consulting, hosting, etc.)
+- Include the Software in commercial products or distributions
+- Remove or alter copyright notices or this license text
+- Use the Software in any way that generates revenue or commercial benefit
+
+COMMERCIAL USE:
+Commercial use requires a separate commercial license. For commercial
+licensing inquiries, contact: chalabi@jchalabi.xyz
+
+ATTRIBUTION:
+All copies and derivative works must include this license and maintain
+attribution to Chandra Station as the original copyright holder.
+
+DISCLAIMER:
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+CHANDRA STATION BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

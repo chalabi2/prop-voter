@@ -1053,7 +1053,7 @@ prop-voter/
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is available for non-commercial use under a custom license. You may use, modify, and distribute the code for personal, educational, or research purposes, but commercial use (including selling the software or offering it as a service) is prohibited without a commercial license. See the [LICENSE](LICENSE) file for complete terms.
 
 ## Security Disclosure
 
