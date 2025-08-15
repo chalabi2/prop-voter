@@ -142,18 +142,18 @@ func (s *Scanner) scanAllChains(ctx context.Context) {
 func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error {
 	s.logger.Debug("Scanning chain for proposals", zap.String("chain", chain.GetName()))
 
-	// Try v1beta1 first, then v1 if it fails
-	proposals, err := s.tryFetchProposalsV1Beta1(ctx, chain)
+	// Try v1 first since it provides better title/description metadata, then fall back to v1beta1
+	proposals, err := s.tryFetchProposalsV1(ctx, chain)
 	if err != nil {
-		s.logger.Debug("v1beta1 failed, trying v1 endpoint", zap.String("chain", chain.GetName()), zap.Error(err))
-		proposals, err = s.tryFetchProposalsV1(ctx, chain)
+		s.logger.Debug("v1 failed, trying v1beta1 endpoint", zap.String("chain", chain.GetName()), zap.Error(err))
+		proposals, err = s.tryFetchProposalsV1Beta1(ctx, chain)
 		if err != nil {
-			return fmt.Errorf("both v1beta1 and v1 endpoints failed: %w", err)
+			return fmt.Errorf("both v1 and v1beta1 endpoints failed: %w", err)
 		}
 	}
 
 	s.logger.Debug("Fetched proposals",
-		zap.String("chain", chain.Name),
+		zap.String("chain", chain.GetName()),
 		zap.Int("proposal_count", len(proposals)),
 	)
 

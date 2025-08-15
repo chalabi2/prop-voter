@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,11 +87,9 @@ func TestConvertToModel(t *testing.T) {
 	}
 
 	proposalData := ProposalData{
-		ProposalID: "123",
-		Content: Content{
-			Title:       "Test Proposal",
-			Description: "This is a test proposal",
-		},
+		ProposalID:      "123",
+		Title:           "Test Proposal",
+		Description:     "This is a test proposal",
 		Status:          "PROPOSAL_STATUS_VOTING_PERIOD",
 		VotingStartTime: "2023-01-01T00:00:00Z",
 		VotingEndTime:   "2023-01-31T23:59:59Z",
@@ -138,11 +137,9 @@ func TestConvertToModelInvalidDates(t *testing.T) {
 	}
 
 	proposalData := ProposalData{
-		ProposalID: "123",
-		Content: Content{
-			Title:       "Test Proposal",
-			Description: "This is a test proposal",
-		},
+		ProposalID:      "123",
+		Title:           "Test Proposal",
+		Description:     "This is a test proposal",
 		Status:          "PROPOSAL_STATUS_VOTING_PERIOD",
 		VotingStartTime: "invalid-date",
 		VotingEndTime:   "also-invalid",
@@ -169,12 +166,10 @@ func TestProcessProposalsNewProposal(t *testing.T) {
 
 	proposals := []ProposalData{
 		{
-			ProposalID: "123",
-			Content: Content{
-				Title:       "Test Proposal",
-				Description: "This is a test proposal",
-			},
-			Status: "PROPOSAL_STATUS_VOTING_PERIOD",
+			ProposalID:  "123",
+			Title:       "Test Proposal",
+			Description: "This is a test proposal",
+			Status:      "PROPOSAL_STATUS_VOTING_PERIOD",
 		},
 	}
 
@@ -223,12 +218,10 @@ func TestProcessProposalsUpdateExisting(t *testing.T) {
 	// Process proposal with updated status
 	proposals := []ProposalData{
 		{
-			ProposalID: "123",
-			Content: Content{
-				Title:       "Test Proposal",
-				Description: "This is a test proposal",
-			},
-			Status: "PROPOSAL_STATUS_VOTING_PERIOD",
+			ProposalID:  "123",
+			Title:       "Test Proposal",
+			Description: "This is a test proposal",
+			Status:      "PROPOSAL_STATUS_VOTING_PERIOD",
 		},
 	}
 
@@ -277,12 +270,10 @@ func TestProcessProposalsNoStatusChange(t *testing.T) {
 	// Process proposal with same status
 	proposals := []ProposalData{
 		{
-			ProposalID: "123",
-			Content: Content{
-				Title:       "Test Proposal",
-				Description: "This is a test proposal",
-			},
-			Status: "PROPOSAL_STATUS_VOTING_PERIOD",
+			ProposalID:  "123",
+			Title:       "Test Proposal",
+			Description: "This is a test proposal",
+			Status:      "PROPOSAL_STATUS_VOTING_PERIOD",
 		},
 	}
 
@@ -309,8 +300,8 @@ func TestProcessProposalsNoStatusChange(t *testing.T) {
 
 func TestScanChainHTTPServer(t *testing.T) {
 	// Create a test HTTP server
-	testResponse := GovernanceResponse{
-		Proposals: []ProposalData{
+	testResponse := GovernanceResponseV1Beta1{
+		Proposals: []ProposalDataV1Beta1{
 			{
 				ProposalID: "456",
 				Content: Content{
@@ -421,30 +412,68 @@ func TestScanChainInvalidJSON(t *testing.T) {
 func TestScanAllChains(t *testing.T) {
 	// Create test servers for multiple chains
 	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := GovernanceResponse{
-			Proposals: []ProposalData{
-				{
-					ProposalID: "111",
-					Content:    Content{Title: "Chain 1 Proposal"},
-					Status:     "PROPOSAL_STATUS_VOTING_PERIOD",
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.Contains(r.URL.Path, "/v1/proposals") {
+			// Handle v1 API request
+			response := GovernanceResponseV1{
+				Proposals: []ProposalDataV1{
+					{
+						ID:     "111",
+						Title:  "Chain 1 Proposal",
+						Status: "PROPOSAL_STATUS_VOTING_PERIOD",
+					},
 				},
-			},
+			}
+			json.NewEncoder(w).Encode(response)
+		} else if strings.Contains(r.URL.Path, "/v1beta1/proposals") {
+			// Handle v1beta1 API request
+			response := GovernanceResponseV1Beta1{
+				Proposals: []ProposalDataV1Beta1{
+					{
+						ProposalID: "111",
+						Content:    Content{Title: "Chain 1 Proposal"},
+						Status:     "PROPOSAL_STATUS_VOTING_PERIOD",
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(response)
+		} else {
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(response)
 	}))
 	defer server1.Close()
 
 	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := GovernanceResponse{
-			Proposals: []ProposalData{
-				{
-					ProposalID: "222",
-					Content:    Content{Title: "Chain 2 Proposal"},
-					Status:     "PROPOSAL_STATUS_VOTING_PERIOD",
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.Contains(r.URL.Path, "/v1/proposals") {
+			// Handle v1 API request
+			response := GovernanceResponseV1{
+				Proposals: []ProposalDataV1{
+					{
+						ID:     "222",
+						Title:  "Chain 2 Proposal",
+						Status: "PROPOSAL_STATUS_VOTING_PERIOD",
+					},
 				},
-			},
+			}
+			json.NewEncoder(w).Encode(response)
+		} else if strings.Contains(r.URL.Path, "/v1beta1/proposals") {
+			// Handle v1beta1 API request
+			response := GovernanceResponseV1Beta1{
+				Proposals: []ProposalDataV1Beta1{
+					{
+						ProposalID: "222",
+						Content:    Content{Title: "Chain 2 Proposal"},
+						Status:     "PROPOSAL_STATUS_VOTING_PERIOD",
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(response)
+		} else {
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(response)
 	}))
 	defer server2.Close()
 
@@ -535,11 +564,9 @@ func BenchmarkConvertToModel(b *testing.B) {
 	}
 
 	proposalData := ProposalData{
-		ProposalID: "123",
-		Content: Content{
-			Title:       "Test Proposal",
-			Description: "This is a test proposal",
-		},
+		ProposalID:      "123",
+		Title:           "Test Proposal",
+		Description:     "This is a test proposal",
 		Status:          "PROPOSAL_STATUS_VOTING_PERIOD",
 		VotingStartTime: "2023-01-01T00:00:00Z",
 		VotingEndTime:   "2023-01-31T23:59:59Z",
@@ -561,12 +588,10 @@ func BenchmarkProcessProposals(b *testing.B) {
 
 	proposals := []ProposalData{
 		{
-			ProposalID: "123",
-			Content: Content{
-				Title:       "Test Proposal",
-				Description: "This is a test proposal",
-			},
-			Status: "PROPOSAL_STATUS_VOTING_PERIOD",
+			ProposalID:  "123",
+			Title:       "Test Proposal",
+			Description: "This is a test proposal",
+			Status:      "PROPOSAL_STATUS_VOTING_PERIOD",
 		},
 	}
 

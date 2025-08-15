@@ -71,14 +71,49 @@ func TestGetChainInfo_Success(t *testing.T) {
 		},
 	}
 
+	// Mock assetlist response
+	mockAssetlist := struct {
+		Assets []struct {
+			Base       string `json:"base"`
+			DenomUnits []struct {
+				Denom    string `json:"denom"`
+				Exponent int    `json:"exponent"`
+			} `json:"denom_units"`
+		} `json:"assets"`
+	}{
+		Assets: []struct {
+			Base       string `json:"base"`
+			DenomUnits []struct {
+				Denom    string `json:"denom"`
+				Exponent int    `json:"exponent"`
+			} `json:"denom_units"`
+		}{
+			{
+				Base: "uosmo",
+				DenomUnits: []struct {
+					Denom    string `json:"denom"`
+					Exponent int    `json:"exponent"`
+				}{
+					{Denom: "uosmo", Exponent: 0},
+					{Denom: "osmo", Exponent: 6},
+				},
+			},
+		},
+	}
+
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/osmosis/chain.json" {
-			t.Errorf("Expected path /osmosis/chain.json, got %s", r.URL.Path)
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(mockResponse)
+
+		switch r.URL.Path {
+		case "/osmosis/chain.json":
+			json.NewEncoder(w).Encode(mockResponse)
+		case "/osmosis/assetlist.json":
+			json.NewEncoder(w).Encode(mockAssetlist)
+		default:
+			t.Errorf("Unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
@@ -168,20 +203,57 @@ func TestGetChainInfo_NotFound(t *testing.T) {
 func TestGetChainInfo_Cache(t *testing.T) {
 	requestCount := 0
 
+	// Mock assetlist response
+	mockAssetlist := struct {
+		Assets []struct {
+			Base       string `json:"base"`
+			DenomUnits []struct {
+				Denom    string `json:"denom"`
+				Exponent int    `json:"exponent"`
+			} `json:"denom_units"`
+		} `json:"assets"`
+	}{
+		Assets: []struct {
+			Base       string `json:"base"`
+			DenomUnits []struct {
+				Denom    string `json:"denom"`
+				Exponent int    `json:"exponent"`
+			} `json:"denom_units"`
+		}{
+			{
+				Base: "uosmo",
+				DenomUnits: []struct {
+					Denom    string `json:"denom"`
+					Exponent int    `json:"exponent"`
+				}{
+					{Denom: "uosmo", Exponent: 0},
+					{Denom: "osmo", Exponent: 6},
+				},
+			},
+		},
+	}
+
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 
-		mockResponse := ChainRegistryResponse{
-			ChainName:    "osmosis",
-			PrettyName:   "Osmosis",
-			ChainID:      "osmosis-1",
-			Bech32Prefix: "osmo",
-			DaemonName:   "osmosisd",
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(mockResponse)
+
+		switch r.URL.Path {
+		case "/osmosis/chain.json":
+			mockResponse := ChainRegistryResponse{
+				ChainName:    "osmosis",
+				PrettyName:   "Osmosis",
+				ChainID:      "osmosis-1",
+				Bech32Prefix: "osmo",
+				DaemonName:   "osmosisd",
+			}
+			json.NewEncoder(w).Encode(mockResponse)
+		case "/osmosis/assetlist.json":
+			json.NewEncoder(w).Encode(mockAssetlist)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
@@ -191,24 +263,24 @@ func TestGetChainInfo_Cache(t *testing.T) {
 
 	ctx := context.Background()
 
-	// First request should hit the server
+	// First request should hit the server (2 requests: chain.json + assetlist.json)
 	_, err := client.GetChainInfo(ctx, "osmosis")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if requestCount != 1 {
-		t.Errorf("Expected 1 request, got %d", requestCount)
+	if requestCount != 2 {
+		t.Errorf("Expected 2 requests, got %d", requestCount)
 	}
 
-	// Second request should use cache
+	// Second request should use cache (no additional requests)
 	_, err = client.GetChainInfo(ctx, "osmosis")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if requestCount != 1 {
-		t.Errorf("Expected 1 request (cached), got %d", requestCount)
+	if requestCount != 2 {
+		t.Errorf("Expected 2 requests (cached), got %d", requestCount)
 	}
 }
 

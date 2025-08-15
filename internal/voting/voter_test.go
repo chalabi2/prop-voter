@@ -107,48 +107,78 @@ func TestCalculateFees(t *testing.T) {
 	}
 }
 
-func TestParseTxHash(t *testing.T) {
+func TestParseTxResponse(t *testing.T) {
 	cfg := &config.Config{}
 	logger := zaptest.NewLogger(t)
 	voter := NewVoter(cfg, logger)
 
 	testCases := []struct {
-		output   string
-		expected string
-		name     string
+		output       string
+		expectedHash string
+		expectedCode int
+		expectError  bool
+		name         string
 	}{
 		{
-			name:     "JSON output with txhash",
-			output:   `{"txhash":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890"}`,
-			expected: "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890",
+			name:         "Valid JSON response - success",
+			output:       `{"height":"12345","txhash":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890","code":0,"codespace":""}`,
+			expectedHash: "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890",
+			expectedCode: 0,
+			expectError:  false,
 		},
 		{
-			name:     "Multiline output with txhash",
-			output:   "code: 0\ntxhash: ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890\ndata: ''",
-			expected: "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890",
+			name:         "Valid JSON response - failure",
+			output:       `{"height":"12345","txhash":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890","code":5,"codespace":"sdk"}`,
+			expectedHash: "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890",
+			expectedCode: 5,
+			expectError:  false,
 		},
 		{
-			name:     "Transaction Hash format",
-			output:   "Transaction Hash: ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890",
-			expected: "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890",
+			name:         "Multiline output with JSON",
+			output:       "gas estimate: 116065\n{\"height\":\"22853036\",\"txhash\":\"F07BDD31E6CF3D3BCF0C0BCCB0ECA10802548F8E4DB052ACA1BE4C074FE34295\",\"code\":0,\"codespace\":\"\"}",
+			expectedHash: "F07BDD31E6CF3D3BCF0C0BCCB0ECA10802548F8E4DB052ACA1BE4C074FE34295",
+			expectedCode: 0,
+			expectError:  false,
 		},
 		{
-			name:     "No hash found",
-			output:   "Some other output without hash",
-			expected: "",
+			name:        "No valid JSON found",
+			output:      "Some other output without valid JSON",
+			expectError: true,
 		},
 		{
-			name:     "Short hash (invalid)",
-			output:   `{"txhash":"SHORTASH"}`,
-			expected: "",
+			name:        "Invalid JSON",
+			output:      `{"txhash":"INVALID_JSON"`,
+			expectError: true,
+		},
+		{
+			name:        "JSON without txhash",
+			output:      `{"code":0,"height":"12345"}`,
+			expectError: true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := voter.parseTxHash(tc.output)
-			if result != tc.expected {
-				t.Errorf("Expected hash '%s', got '%s'", tc.expected, result)
+			result, err := voter.parseTxResponse(tc.output)
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if result.TxHash != tc.expectedHash {
+				t.Errorf("Expected hash '%s', got '%s'", tc.expectedHash, result.TxHash)
+			}
+
+			if result.Code != tc.expectedCode {
+				t.Errorf("Expected code %d, got %d", tc.expectedCode, result.Code)
 			}
 		})
 	}
@@ -277,15 +307,15 @@ func BenchmarkBuildVoteCommand(b *testing.B) {
 	}
 }
 
-func BenchmarkParseTxHash(b *testing.B) {
+func BenchmarkParseTxResponse(b *testing.B) {
 	cfg := &config.Config{}
 	logger := zaptest.NewLogger(b)
 	voter := NewVoter(cfg, logger)
 
-	output := `{"txhash":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890"}`
+	output := `{"height":"12345","txhash":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890","code":0,"codespace":""}`
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		voter.parseTxHash(output)
+		voter.parseTxResponse(output)
 	}
 }
