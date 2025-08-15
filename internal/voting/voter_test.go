@@ -1,6 +1,8 @@
 package voting
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -307,6 +309,234 @@ func BenchmarkBuildVoteCommand(b *testing.B) {
 	}
 }
 
+// Tests for Authz functionality
+
+func TestVoteAuthzChainNotFound(t *testing.T) {
+	cfg := &config.Config{
+		Chains: []config.ChainConfig{
+			{
+				Name:    "Test Chain",
+				ChainID: "test-1",
+			},
+		},
+	}
+	logger := zaptest.NewLogger(t)
+	voter := NewVoter(cfg, logger)
+
+	_, err := voter.VoteAuthz("non-existent-chain", "123", "yes")
+	if err == nil {
+		t.Error("Expected error for non-existent chain")
+	}
+
+	expectedError := "chain non-existent-chain not found in configuration"
+	if !strings.Contains(err.Error(), expectedError) {
+		t.Errorf("Expected error to contain '%s', got '%s'", expectedError, err.Error())
+	}
+}
+
+func TestVoteAuthzNotEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Chains: []config.ChainConfig{
+			{
+				Name:      "Test Chain",
+				ChainID:   "test-1",
+				WalletKey: "test-key",
+				// Authz is not enabled - default values
+				Authz: config.AuthzConfig{
+					Enabled: false,
+				},
+			},
+		},
+	}
+	logger := zaptest.NewLogger(t)
+	voter := NewVoter(cfg, logger)
+
+	_, err := voter.VoteAuthz("test-1", "123", "yes")
+	if err == nil {
+		t.Error("Expected error when authz is not enabled")
+	}
+
+	expectedError := "authz voting is not enabled for chain Test Chain"
+	if !strings.Contains(err.Error(), expectedError) {
+		t.Errorf("Expected error to contain '%s', got '%s'", expectedError, err.Error())
+	}
+}
+
+func TestVoteAuthzAuthzEnabledButNoGranterAddr(t *testing.T) {
+	cfg := &config.Config{
+		Chains: []config.ChainConfig{
+			{
+				Name:      "Test Chain",
+				ChainID:   "test-1",
+				WalletKey: "test-key",
+				Authz: config.AuthzConfig{
+					Enabled:     true,
+					GranterAddr: "", // No granter address
+				},
+			},
+		},
+	}
+	logger := zaptest.NewLogger(t)
+	voter := NewVoter(cfg, logger)
+
+	_, err := voter.VoteAuthz("test-1", "123", "yes")
+	if err == nil {
+		t.Error("Expected error when authz is enabled but no granter address")
+	}
+
+	expectedError := "authz voting is not enabled for chain Test Chain"
+	if !strings.Contains(err.Error(), expectedError) {
+		t.Errorf("Expected error to contain '%s', got '%s'", expectedError, err.Error())
+	}
+}
+
+func TestBuildAuthzVoteCommand(t *testing.T) {
+	cfg := &config.Config{}
+	logger := zaptest.NewLogger(t)
+	voter := NewVoter(cfg, logger)
+
+	chain := &config.ChainConfig{
+		Name:      "Test Chain",
+		ChainID:   "test-1",
+		RPC:       "http://localhost:26657",
+		Denom:     "utest",
+		CLIName:   "testd",
+		WalletKey: "grantee-key",
+		Authz: config.AuthzConfig{
+			Enabled:     true,
+			GranterAddr: "test1granter123addr456",
+			GranterName: "Test Granter",
+		},
+	}
+
+	ctx := context.Background()
+	cmd := voter.buildAuthzVoteCommandWithContext(ctx, chain, "123", "yes")
+
+	expectedCommand := "testd"
+	if cmd.Args[0] != expectedCommand {
+		t.Errorf("Expected command '%s', got '%s'", expectedCommand, cmd.Args[0])
+	}
+
+	expectedArgs := []string{
+		"tx", "authz", "exec",
+		"/tmp/vote_msg_test-1_123.json", // message file path
+		"--from", "grantee-key",
+		"--chain-id", "test-1",
+		"--node", "http://localhost:26657",
+		"--gas", "auto",
+		"--gas-adjustment", "1.3",
+		"--fees", "5000utest",
+		"--keyring-backend", "test",
+		"--yes",
+		"--output", "json",
+	}
+
+	if len(cmd.Args) != len(expectedArgs)+1 {
+		t.Fatalf("Expected %d args, got %d", len(expectedArgs)+1, len(cmd.Args))
+	}
+
+	for i, expectedArg := range expectedArgs {
+		if cmd.Args[i+1] != expectedArg {
+			t.Errorf("Expected arg at index %d to be '%s', got '%s'", i+1, expectedArg, cmd.Args[i+1])
+		}
+	}
+
+	// Clean up the temporary file that might have been created
+	msgFile := "/tmp/vote_msg_test-1_123.json"
+	_ = os.Remove(msgFile) // Ignore error in test cleanup
+}
+
+func TestMapVoteOption(t *testing.T) {
+	cfg := &config.Config{}
+	logger := zaptest.NewLogger(t)
+	voter := NewVoter(cfg, logger)
+
+	testCases := []struct {
+		input    string
+		expected string
+	}{
+		{"yes", "VOTE_OPTION_YES"},
+		{"YES", "VOTE_OPTION_YES"},
+		{"Yes", "VOTE_OPTION_YES"},
+		{"no", "VOTE_OPTION_NO"},
+		{"NO", "VOTE_OPTION_NO"},
+		{"abstain", "VOTE_OPTION_ABSTAIN"},
+		{"ABSTAIN", "VOTE_OPTION_ABSTAIN"},
+		{"no_with_veto", "VOTE_OPTION_NO_WITH_VETO"},
+		{"NO_WITH_VETO", "VOTE_OPTION_NO_WITH_VETO"},
+		{"invalid", "VOTE_OPTION_UNSPECIFIED"},
+		{"", "VOTE_OPTION_UNSPECIFIED"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			result := voter.mapVoteOption(tc.input)
+			if result != tc.expected {
+				t.Errorf("Expected '%s' for input '%s', got '%s'", tc.expected, tc.input, result)
+			}
+		})
+	}
+}
+
+func TestAuthzVoteMessageGeneration(t *testing.T) {
+	cfg := &config.Config{}
+	logger := zaptest.NewLogger(t)
+	voter := NewVoter(cfg, logger)
+
+	chain := &config.ChainConfig{
+		ChainID: "test-1",
+		CLIName: "testd",
+		Authz: config.AuthzConfig{
+			Enabled:     true,
+			GranterAddr: "test1granter123addr456",
+		},
+	}
+
+	ctx := context.Background()
+	proposalID := "123"
+	option := "yes"
+
+	// Build the command which should create the message file
+	cmd := voter.buildAuthzVoteCommandWithContext(ctx, chain, proposalID, option)
+
+	// Check that the temporary file was created and has correct content
+	msgFile := "/tmp/vote_msg_test-1_123.json"
+
+	// The file should exist after building the command
+	if _, err := os.Stat(msgFile); os.IsNotExist(err) {
+		t.Fatalf("Expected message file to be created at %s", msgFile)
+	}
+
+	// Read the message file content
+	content, err := os.ReadFile(msgFile)
+	if err != nil {
+		t.Fatalf("Failed to read message file: %v", err)
+	}
+
+	// Verify the JSON structure contains expected fields
+	expectedContent := []string{
+		`"@type": "/cosmos.gov.v1beta1.MsgVote"`,
+		`"proposal_id": "123"`,
+		`"voter": "test1granter123addr456"`,
+		`"option": "VOTE_OPTION_YES"`,
+	}
+
+	contentStr := string(content)
+	for _, expected := range expectedContent {
+		if !strings.Contains(contentStr, expected) {
+			t.Errorf("Expected message file to contain '%s', but content was: %s", expected, contentStr)
+		}
+	}
+
+	// Clean up
+	_ = os.Remove(msgFile) // Ignore error in test cleanup
+
+	// Verify command args
+	if cmd.Args[0] != "testd" { // Default CLI name from getBinaryPath
+		t.Errorf("Expected command to use CLI tool, got: %s", cmd.Args[0])
+	}
+}
+
 func BenchmarkParseTxResponse(b *testing.B) {
 	cfg := &config.Config{}
 	logger := zaptest.NewLogger(b)
@@ -316,6 +546,6 @@ func BenchmarkParseTxResponse(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		voter.parseTxResponse(output)
+		_, _ = voter.parseTxResponse(output) // Benchmark doesn't need error checking
 	}
 }

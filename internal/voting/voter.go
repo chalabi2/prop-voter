@@ -107,6 +107,91 @@ func (v *Voter) Vote(chainID, proposalID, option string) (string, error) {
 	return txResponse.TxHash, nil
 }
 
+// VoteAuthz submits an authz vote for a proposal on the specified chain on behalf of a granter
+func (v *Voter) VoteAuthz(chainID, proposalID, option string) (string, error) {
+	// Find the chain configuration
+	var chainConfig *config.ChainConfig
+	for _, chain := range v.config.Chains {
+		if chain.GetChainID() == chainID {
+			chainConfig = &chain
+			break
+		}
+	}
+
+	if chainConfig == nil {
+		return "", fmt.Errorf("chain %s not found in configuration", chainID)
+	}
+
+	// Check if authz is enabled for this chain
+	if !chainConfig.IsAuthzEnabled() {
+		return "", fmt.Errorf("authz voting is not enabled for chain %s", chainConfig.GetName())
+	}
+
+	v.logger.Info("Submitting authz vote",
+		zap.String("chain", chainConfig.GetName()),
+		zap.String("chain_id", chainID),
+		zap.String("proposal_id", proposalID),
+		zap.String("option", option),
+		zap.String("granter", chainConfig.GetGranterAddr()),
+	)
+
+	// Build the authz CLI command with timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := v.buildAuthzVoteCommandWithContext(ctx, chainConfig, proposalID, option)
+
+	v.logger.Debug("Executing authz vote command", zap.Strings("cmd", cmd.Args))
+
+	// Execute the command with timeout
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if it was a timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			v.logger.Error("Authz vote command timed out after 60 seconds",
+				zap.String("chain", chainConfig.GetName()),
+				zap.String("proposal_id", proposalID),
+			)
+			return "", fmt.Errorf("authz vote command timed out after 60 seconds - the transaction may still be processing")
+		}
+
+		v.logger.Error("Authz vote command failed",
+			zap.Error(err),
+			zap.String("output", string(output)),
+		)
+		return "", fmt.Errorf("authz vote command failed: %w - output: %s", err, string(output))
+	}
+
+	// Parse transaction response from CLI output
+	txResponse, err := v.parseTxResponse(string(output))
+	if err != nil {
+		v.logger.Warn("Could not parse authz transaction response",
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return "UNKNOWN_HASH_CHECK_LOGS", nil
+	}
+
+	// Check if transaction was successful
+	if txResponse.Code != 0 {
+		v.logger.Error("Authz transaction failed",
+			zap.Int("code", txResponse.Code),
+			zap.String("codespace", txResponse.Codespace),
+			zap.String("tx_hash", txResponse.TxHash),
+		)
+		return "", fmt.Errorf("authz transaction failed with code %d: %s", txResponse.Code, txResponse.Codespace)
+	}
+
+	v.logger.Info("Authz vote submitted successfully",
+		zap.String("chain", chainConfig.GetName()),
+		zap.String("proposal_id", proposalID),
+		zap.String("tx_hash", txResponse.TxHash),
+		zap.String("granter", chainConfig.GetGranterAddr()),
+	)
+
+	return txResponse.TxHash, nil
+}
+
 // buildVoteCommandWithContext builds the CLI command for voting with timeout context
 func (v *Voter) buildVoteCommandWithContext(ctx context.Context, chain *config.ChainConfig, proposalID, option string) *exec.Cmd {
 	args := []string{
@@ -149,6 +234,75 @@ func (v *Voter) buildVoteCommand(chain *config.ChainConfig, proposalID, option s
 	// Use managed binary path if available
 	cliPath := v.getBinaryPath(chain.GetCLIName())
 	return exec.Command(cliPath, args...)
+}
+
+// buildAuthzVoteCommandWithContext builds the CLI command for authz voting with timeout context
+func (v *Voter) buildAuthzVoteCommandWithContext(ctx context.Context, chain *config.ChainConfig, proposalID, option string) *exec.Cmd {
+	// Create temporary message file for authz exec
+	msgFile := fmt.Sprintf("/tmp/vote_msg_%s_%s.json", chain.GetChainID(), proposalID)
+
+	// Create the governance vote message JSON
+	govVoteMsg := fmt.Sprintf(`{
+  "body": {
+    "messages": [
+      {
+        "@type": "/cosmos.gov.v1beta1.MsgVote",
+        "proposal_id": "%s",
+        "voter": "%s",
+        "option": "%s"
+      }
+    ]
+  }
+}`, proposalID, chain.GetGranterAddr(), v.mapVoteOption(option))
+
+	// Write message to temporary file
+	if err := os.WriteFile(msgFile, []byte(govVoteMsg), 0644); err != nil {
+		v.logger.Error("Failed to write authz message file", zap.Error(err))
+	}
+
+	args := []string{
+		"tx", "authz", "exec",
+		msgFile,
+		"--from", chain.WalletKey,
+		"--chain-id", chain.GetChainID(),
+		"--node", chain.RPC,
+		"--gas", "auto",
+		"--gas-adjustment", "1.3",
+		"--fees", v.calculateFees(chain),
+		"--keyring-backend", "test",
+		"--yes",
+		"--output", "json",
+	}
+
+	// Use managed binary path if available
+	cliPath := v.getBinaryPath(chain.GetCLIName())
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+
+	// Set up cleanup of the temporary file after command execution
+	go func() {
+		<-ctx.Done()
+		if err := os.Remove(msgFile); err != nil {
+			v.logger.Debug("Failed to remove temporary message file", zap.Error(err))
+		}
+	}()
+
+	return cmd
+}
+
+// mapVoteOption maps user-friendly vote options to the format expected by governance
+func (v *Voter) mapVoteOption(option string) string {
+	switch strings.ToLower(option) {
+	case "yes":
+		return "VOTE_OPTION_YES"
+	case "no":
+		return "VOTE_OPTION_NO"
+	case "abstain":
+		return "VOTE_OPTION_ABSTAIN"
+	case "no_with_veto":
+		return "VOTE_OPTION_NO_WITH_VETO"
+	default:
+		return "VOTE_OPTION_UNSPECIFIED"
+	}
 }
 
 // getBinaryPath returns the path to the CLI binary (managed or system)

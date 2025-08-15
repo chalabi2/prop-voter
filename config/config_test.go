@@ -498,3 +498,97 @@ func TestPopulateFromRegistry(t *testing.T) {
 		t.Errorf("Expected GetChainID() to return 'osmosis-1', got '%s'", chain.GetChainID())
 	}
 }
+
+func TestChainConfigAuthzHelperMethods(t *testing.T) {
+	// Test authz enabled with granter address
+	authzEnabledChain := ChainConfig{
+		Name:      "Test Chain",
+		ChainID:   "test-1",
+		WalletKey: "grantee-key",
+		Authz: AuthzConfig{
+			Enabled:     true,
+			GranterAddr: "test1granter123addr456",
+			GranterName: "Test Validator",
+		},
+	}
+
+	if !authzEnabledChain.IsAuthzEnabled() {
+		t.Error("Expected authz to be enabled when Enabled=true and GranterAddr is set")
+	}
+
+	if authzEnabledChain.GetGranterAddr() != "test1granter123addr456" {
+		t.Errorf("Expected GetGranterAddr() to return 'test1granter123addr456', got '%s'", authzEnabledChain.GetGranterAddr())
+	}
+
+	if authzEnabledChain.GetGranterName() != "Test Validator" {
+		t.Errorf("Expected GetGranterName() to return 'Test Validator', got '%s'", authzEnabledChain.GetGranterName())
+	}
+
+	// Test authz enabled but no granter address (should be disabled)
+	authzEnabledNoAddr := ChainConfig{
+		Name:      "Test Chain",
+		ChainID:   "test-1",
+		WalletKey: "grantee-key",
+		Authz: AuthzConfig{
+			Enabled:     true,
+			GranterAddr: "", // No granter address
+			GranterName: "Test Validator",
+		},
+	}
+
+	if authzEnabledNoAddr.IsAuthzEnabled() {
+		t.Error("Expected authz to be disabled when GranterAddr is empty")
+	}
+
+	// Test authz disabled explicitly
+	authzDisabled := ChainConfig{
+		Name:      "Test Chain",
+		ChainID:   "test-1",
+		WalletKey: "grantee-key",
+		Authz: AuthzConfig{
+			Enabled:     false,
+			GranterAddr: "test1granter123addr456",
+			GranterName: "Test Validator",
+		},
+	}
+
+	if authzDisabled.IsAuthzEnabled() {
+		t.Error("Expected authz to be disabled when Enabled=false")
+	}
+
+	// Test authz not configured (default values)
+	authzDefault := ChainConfig{
+		Name:      "Test Chain",
+		ChainID:   "test-1",
+		WalletKey: "grantee-key",
+		// Authz field is not set, uses zero values
+	}
+
+	if authzDefault.IsAuthzEnabled() {
+		t.Error("Expected authz to be disabled by default")
+	}
+
+	if authzDefault.GetGranterAddr() != "" {
+		t.Errorf("Expected GetGranterAddr() to return empty string by default, got '%s'", authzDefault.GetGranterAddr())
+	}
+
+	if authzDefault.GetGranterName() != "" {
+		t.Errorf("Expected GetGranterName() to return empty string by default, got '%s'", authzDefault.GetGranterName())
+	}
+
+	// Test granter name fallback to address when name is not set
+	authzNoName := ChainConfig{
+		Name:      "Test Chain",
+		ChainID:   "test-1",
+		WalletKey: "grantee-key",
+		Authz: AuthzConfig{
+			Enabled:     true,
+			GranterAddr: "test1granter123addr456",
+			GranterName: "", // No friendly name
+		},
+	}
+
+	if authzNoName.GetGranterName() != "test1granter123addr456" {
+		t.Errorf("Expected GetGranterName() to fallback to address when name is empty, got '%s'", authzNoName.GetGranterName())
+	}
+}

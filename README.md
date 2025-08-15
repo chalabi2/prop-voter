@@ -25,6 +25,7 @@ A secure, automated Cosmos governance proposal monitoring and voting bot for Dis
 - **Multi-Chain Scanning**: Automatically scans multiple Cosmos chains for new governance proposals
 - **Discord Notifications**: Sends real-time notifications when new proposals are detected
 - **Secure Voting**: Vote on proposals through Discord commands with secret verification
+- **Authz Support**: Vote on behalf of other wallets using Cosmos authz functionality
 - **Wallet Security**: Encrypted wallet storage with user authentication
 - **Chain Registry Integration**: Automatically discovers chain metadata from the official Cosmos Chain Registry
 - **Simplified Configuration**: Just specify chain name, RPC, REST, and wallet key - everything else is auto-discovered
@@ -147,11 +148,15 @@ chains:
     wallet_key: "my-osmosis-key"
     # Everything else auto-discovered: chain_id, daemon_name, denom, prefix, binary_url, logo, etc.
 
-  # Juno - equally simple
+  # Juno with authz support - vote on behalf of another wallet
   - chain_name: "juno"
     rpc: "https://rpc-juno.blockapsis.com"
     rest: "https://lcd-juno.blockapsis.com"
     wallet_key: "my-juno-key"
+    authz:
+      enabled: true
+      granter_addr: "juno1abc123def456ghi789..." # Address to vote on behalf of
+      granter_name: "Validator Wallet" # Optional friendly name
 
   # You can mix formats - legacy format for unsupported chains
   - name: "Custom Chain"
@@ -162,6 +167,10 @@ chains:
     prefix: "custom"
     cli_name: "customd"
     wallet_key: "my-custom-key"
+    authz:
+      enabled: true
+      granter_addr: "custom1xyz789abc123def456..."
+      granter_name: "Main Validator"
     binary_repo:
       enabled: true
       owner: "custom-org"
@@ -238,6 +247,62 @@ The following chains are supported through the Chain Registry (just use `chain_n
 - `celestia` - Celestia
 
 And many more! See the complete list: `./prop-voter -registry list`
+
+### Authz Support
+
+Prop-Voter supports Cosmos authz (authorization) functionality, allowing your configured wallet to vote on behalf of another wallet. This is useful for:
+
+- **Validators**: Vote on behalf of your validator address using a separate key
+- **Multisig Scenarios**: One key holder can vote for the entire multisig
+- **Delegation**: Allow a trusted party to vote on your behalf
+
+#### Authz Configuration
+
+To enable authz voting for a chain, add the `authz` section to your chain configuration:
+
+```yaml
+chains:
+  - chain_name: "osmosis"
+    rpc: "https://rpc-osmosis.blockapsis.com"
+    rest: "https://lcd-osmosis.blockapsis.com"
+    wallet_key: "my-grantee-key" # Key that executes votes
+    authz:
+      enabled: true
+      granter_addr: "osmo1abc123def456..." # Address being voted on behalf of
+      granter_name: "My Validator" # Optional friendly name
+```
+
+#### Prerequisites for Authz Voting
+
+Before using authz voting, you must grant the necessary permissions on-chain:
+
+1. **Grant Permission**: The granter wallet must grant authorization to your grantee wallet:
+
+   ```bash
+   osmosisd tx authz grant osmo1grantee-address generic \
+     --msg-type /cosmos.gov.v1beta1.MsgVote \
+     --from my-granter-key \
+     --chain-id osmosis-1 \
+     --fees 5000uosmo
+   ```
+
+2. **Verify Grant**: Check that the authorization exists:
+
+   ```bash
+   osmosisd query authz grants osmo1granter-address osmo1grantee-address \
+     --chain-id osmosis-1
+   ```
+
+**Note**: Prop-Voter handles creating the authz execution messages but does **not** manage the granting of permissions. You need to grant authz permissions separately using the chain's CLI or a separate tool.
+
+#### Authz Discord Commands
+
+Once configured, use these commands to vote via authz:
+
+- `!prop-authz-vote <chain> <proposal_id> <vote> <secret>` or `!pavote` for short
+- Example: `!pavote osmosis-1 123 yes mysecret`
+
+The bot will show which address it's voting on behalf of in the confirmation message.
 
 ### Platform-Specific Binary Patterns (Legacy Format)
 
@@ -424,17 +489,19 @@ make run-debug
 
 Once the bot is running, use these commands in your configured Discord channel:
 
-- `!help` - Show available commands
-- `!proposals [chain]` - List recent proposals (optionally filter by chain)
-- `!vote <chain> <proposal_id> <vote> <secret>` - Vote on a proposal
-- `!status <chain> <proposal_id>` - Show voting status for a proposal
+- `!prop-help` (or `!phelp`) - Show available commands
+- `!prop-proposals [chain]` (or `!pproposals`) - List recent proposals (optionally filter by chain)
+- `!prop-vote <chain> <proposal_id> <vote> <secret>` (or `!pvote`) - Vote on a proposal
+- `!prop-authz-vote <chain> <proposal_id> <vote> <secret>` (or `!pavote`) - Vote on behalf of another wallet (requires authz)
+- `!prop-status <chain> <proposal_id>` (or `!pstatus`) - Show voting status for a proposal
 
 **Vote options**: `yes`, `no`, `abstain`, `no_with_veto`
 
 **Example voting:**
 
-```
-!vote cosmoshub-4 123 yes mysecret
+```discord
+!pvote cosmoshub-4 123 yes mysecret
+!pavote cosmoshub-4 123 yes mysecret  # Authz vote
 ```
 
 ### Automatic Notifications

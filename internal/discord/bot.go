@@ -113,6 +113,8 @@ func (b *Bot) messageHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 		b.listProposals(m.ChannelID, parts[1:])
 	case "!prop-vote", "!pvote":
 		b.handleVoteCommand(m.ChannelID, parts[1:])
+	case "!prop-authz-vote", "!pavote":
+		b.handleAuthzVoteCommand(m.ChannelID, parts[1:])
 	case "!prop-status", "!pstatus":
 		b.showStatus(m.ChannelID, parts[1:])
 	default:
@@ -131,11 +133,16 @@ func (b *Bot) sendHelp(channelID string) {
 ` + "`" + `!prop-vote <chain> <proposal_id> <vote> <secret>` + "`" + ` (or ` + "`" + `!pvote` + "`" + `) - Vote on a proposal
   - vote options: yes, no, abstain, no_with_veto
   - secret: your configured vote secret
+` + "`" + `!prop-authz-vote <chain> <proposal_id> <vote> <secret>` + "`" + ` (or ` + "`" + `!pavote` + "`" + `) - Vote on behalf of another wallet (requires authz)
+  - vote options: yes, no, abstain, no_with_veto
+  - secret: your configured vote secret
+  - note: chain must have authz enabled in config
 ` + "`" + `!prop-status [chain] [proposal_id]` + "`" + ` (or ` + "`" + `!pstatus` + "`" + `) - Show voting status
 
 **Examples:**
 ` + "`" + `!pproposals cosmoshub-4` + "`" + `
 ` + "`" + `!pvote cosmoshub-4 123 yes mysecret` + "`" + `
+` + "`" + `!pavote cosmoshub-4 123 yes mysecret` + "`" + ` (authz vote)
 ` + "`" + `!pstatus cosmoshub-4 123` + "`" + ``
 
 	b.sendMessage(channelID, help)
@@ -281,6 +288,137 @@ func (b *Bot) handleVoteCommand(channelID string, args []string) {
 		// Normal success with hash
 		successMsg := fmt.Sprintf("✅ **Vote Submitted Successfully!**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n**Transaction Hash:** `%s`\n\n🔗 [View on Explorer](https://www.mintscan.io/%s/txs/%s)",
 			chainID, proposalID, voteOption, txHash, b.getExplorerChainName(chainID), txHash)
+		b.sendMessage(channelID, successMsg)
+	}
+}
+
+// handleAuthzVoteCommand handles authz vote commands
+func (b *Bot) handleAuthzVoteCommand(channelID string, args []string) {
+	if len(args) < 4 {
+		b.sendMessage(channelID, "❌ Usage: `!prop-authz-vote <chain> <proposal_id> <vote> <secret>` (or `!pavote`)")
+		return
+	}
+
+	chainID := args[0]
+	proposalID := args[1]
+	voteOption := strings.ToLower(args[2])
+	secret := args[3]
+
+	// Verify secret
+	if secret != b.config.Security.VoteSecret {
+		b.sendMessage(channelID, "❌ Invalid secret")
+		b.logger.Warn("Invalid authz vote secret provided",
+			zap.String("chain", chainID),
+			zap.String("proposal", proposalID),
+		)
+		return
+	}
+
+	// Validate vote option
+	validVotes := map[string]bool{
+		"yes":          true,
+		"no":           true,
+		"abstain":      true,
+		"no_with_veto": true,
+	}
+
+	if !validVotes[voteOption] {
+		b.sendMessage(channelID, "❌ Invalid vote option. Use: yes, no, abstain, no_with_veto")
+		return
+	}
+
+	// Find the chain configuration and check if authz is enabled
+	var chainConfig *config.ChainConfig
+	for _, chain := range b.config.Chains {
+		if chain.GetChainID() == chainID {
+			chainConfig = &chain
+			break
+		}
+	}
+
+	if chainConfig == nil {
+		b.sendMessage(channelID, "❌ Chain not found in configuration")
+		return
+	}
+
+	if !chainConfig.IsAuthzEnabled() {
+		b.sendMessage(channelID, fmt.Sprintf("❌ Authz voting is not enabled for chain %s", chainConfig.GetName()))
+		return
+	}
+
+	// Check if proposal exists
+	var proposal models.Proposal
+	if err := b.db.Where("chain_id = ? AND proposal_id = ?", chainID, proposalID).First(&proposal).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			b.sendMessage(channelID, "❌ Proposal not found")
+		} else {
+			b.sendMessage(channelID, "❌ Database error")
+		}
+		return
+	}
+
+	granterName := chainConfig.GetGranterName()
+	b.sendMessage(channelID, fmt.Sprintf("🗳️ Submitting authz vote: **%s** on **%s** proposal **#%s** on behalf of **%s**...",
+		voteOption, chainID, proposalID, granterName))
+
+	// Submit authz vote with timeout handling
+	done := make(chan struct{})
+	var txHash string
+	var err error
+
+	go func() {
+		defer close(done)
+		txHash, err = b.voter.VoteAuthz(chainID, proposalID, voteOption)
+	}()
+
+	// Send a warning if it's taking too long
+	select {
+	case <-done:
+		// Vote completed (success or failure)
+	case <-time.After(30 * time.Second):
+		b.sendMessage(channelID, "⏳ Authz vote is taking longer than expected... still processing (max 60s timeout)")
+		<-done // Wait for completion
+	}
+
+	if err != nil {
+		// Enhanced error message with more detail (but truncated for Discord)
+		errorDetails := err.Error()
+		if len(errorDetails) > 1500 { // Leave room for other text
+			errorDetails = errorDetails[:1500] + "...\n[Error truncated - check server logs for full details]"
+		}
+
+		errorMsg := fmt.Sprintf("❌ **Authz Vote Failed**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n**Granter:** %s\n\n**Error Details:**\n```\n%s\n```",
+			chainID, proposalID, voteOption, granterName, errorDetails)
+		b.sendMessage(channelID, errorMsg)
+		return
+	}
+
+	// Store authz vote in database
+	vote := models.Vote{
+		ChainID:     chainID,
+		ProposalID:  proposalID,
+		Option:      voteOption,
+		TxHash:      txHash,
+		VotedAt:     time.Now(),
+		IsAuthzVote: true,
+		GranterAddr: chainConfig.GetGranterAddr(),
+		GranterName: granterName,
+	}
+
+	if err := b.db.Create(&vote).Error; err != nil {
+		b.logger.Error("Failed to store authz vote", zap.Error(err))
+	}
+
+	// Enhanced success message
+	if txHash == "UNKNOWN_HASH_CHECK_LOGS" {
+		// Vote succeeded but couldn't parse hash
+		successMsg := fmt.Sprintf("⚠️ **Authz Vote Likely Submitted Successfully!**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n**Granter:** %s\n\n**Note:** Could not parse transaction hash from CLI output. Check server logs for raw output or verify your vote manually on the explorer.",
+			chainID, proposalID, voteOption, granterName)
+		b.sendMessage(channelID, successMsg)
+	} else {
+		// Normal success with hash
+		successMsg := fmt.Sprintf("✅ **Authz Vote Submitted Successfully!**\n\n**Chain:** %s\n**Proposal:** #%s\n**Vote:** %s\n**Granter:** %s\n**Transaction Hash:** `%s`\n\n🔗 [View on Explorer](https://www.mintscan.io/%s/txs/%s)",
+			chainID, proposalID, voteOption, granterName, txHash, b.getExplorerChainName(chainID), txHash)
 		b.sendMessage(channelID, successMsg)
 	}
 }

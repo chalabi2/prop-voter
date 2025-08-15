@@ -47,6 +47,9 @@ type ChainConfig struct {
 	REST      string `mapstructure:"rest"`
 	WalletKey string `mapstructure:"wallet_key"`
 
+	// Authz configuration for voting on behalf of other wallets
+	Authz AuthzConfig `mapstructure:"authz"`
+
 	// Legacy format fields (optional when using Chain Registry)
 	Name       string     `mapstructure:"name"`
 	ChainID    string     `mapstructure:"chain_id"`
@@ -72,6 +75,13 @@ type ChainRegistryInfo struct {
 	GitRepo      string
 	Version      string
 	BinaryURL    string
+}
+
+// AuthzConfig holds authorization configuration for voting on behalf of other wallets
+type AuthzConfig struct {
+	Enabled     bool   `mapstructure:"enabled"`      // Whether authz voting is enabled for this chain
+	GranterAddr string `mapstructure:"granter_addr"` // Address of the wallet we vote on behalf of
+	GranterName string `mapstructure:"granter_name"` // Optional friendly name for the granter
 }
 
 // BinaryRepo represents GitHub repository information for binary management
@@ -204,4 +214,22 @@ func (c *ChainConfig) GetLogoURL() string {
 // PopulateFromRegistry sets registry info for this chain
 func (c *ChainConfig) PopulateFromRegistry(registryInfo *ChainRegistryInfo) {
 	c.RegistryInfo = registryInfo
+}
+
+// IsAuthzEnabled returns true if authz voting is enabled for this chain
+func (c *ChainConfig) IsAuthzEnabled() bool {
+	return c.Authz.Enabled && c.Authz.GranterAddr != ""
+}
+
+// GetGranterAddr returns the granter address for authz voting
+func (c *ChainConfig) GetGranterAddr() string {
+	return c.Authz.GranterAddr
+}
+
+// GetGranterName returns the friendly name for the granter, or the address if no name is set
+func (c *ChainConfig) GetGranterName() string {
+	if c.Authz.GranterName != "" {
+		return c.Authz.GranterName
+	}
+	return c.Authz.GranterAddr
 }

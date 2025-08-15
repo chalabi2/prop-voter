@@ -35,6 +35,11 @@ type Vote struct {
 	TxHash     string
 	VotedAt    time.Time
 	CreatedAt  time.Time
+
+	// Authz fields for voting on behalf of another wallet
+	IsAuthzVote bool   `gorm:"default:false"` // Whether this was an authz vote
+	GranterAddr string `gorm:"index"`         // Address we voted on behalf of (for authz votes)
+	GranterName string // Friendly name for the granter
 }
 
 // WalletInfo stores encrypted wallet information
