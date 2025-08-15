@@ -142,14 +142,45 @@ func (s *Scanner) scanAllChains(ctx context.Context) {
 func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error {
 	s.logger.Debug("Scanning chain for proposals", zap.String("chain", chain.GetName()))
 
-	// Try v1 first since it provides better title/description metadata, then fall back to v1beta1
-	proposals, err := s.tryFetchProposalsV1(ctx, chain)
-	if err != nil {
-		s.logger.Debug("v1 failed, trying v1beta1 endpoint", zap.String("chain", chain.GetName()), zap.Error(err))
-		proposals, err = s.tryFetchProposalsV1Beta1(ctx, chain)
-		if err != nil {
-			return fmt.Errorf("both v1 and v1beta1 endpoints failed: %w", err)
+	// Try both API versions and use the one with better data
+	var proposals []ProposalData
+
+	// Try v1 first
+	proposalsV1, errV1 := s.tryFetchProposalsV1(ctx, chain)
+
+	// Try v1beta1 second
+	proposalsV1Beta1, errV1Beta1 := s.tryFetchProposalsV1Beta1(ctx, chain)
+
+	// If both failed, return error
+	if errV1 != nil && errV1Beta1 != nil {
+		return fmt.Errorf("both v1 and v1beta1 endpoints failed - v1: %v, v1beta1: %v", errV1, errV1Beta1)
+	}
+
+	// Choose the best API response based on data completeness
+	if errV1 == nil && errV1Beta1 == nil {
+		// Both succeeded - pick the one with better title data
+		v1HasTitles := len(proposalsV1) > 0 && proposalsV1[0].Title != ""
+		v1Beta1HasTitles := len(proposalsV1Beta1) > 0 && proposalsV1Beta1[0].Title != ""
+
+		if v1HasTitles && !v1Beta1HasTitles {
+			proposals = proposalsV1
+			s.logger.Debug("Using v1 API (better metadata)", zap.String("chain", chain.GetName()))
+		} else if v1Beta1HasTitles && !v1HasTitles {
+			proposals = proposalsV1Beta1
+			s.logger.Debug("Using v1beta1 API (better metadata)", zap.String("chain", chain.GetName()))
+		} else {
+			// Both have titles or both don't - prefer v1
+			proposals = proposalsV1
+			s.logger.Debug("Using v1 API (default choice)", zap.String("chain", chain.GetName()))
 		}
+	} else if errV1 == nil {
+		// Only v1 succeeded
+		proposals = proposalsV1
+		s.logger.Debug("Using v1 API (v1beta1 failed)", zap.String("chain", chain.GetName()), zap.Error(errV1Beta1))
+	} else {
+		// Only v1beta1 succeeded
+		proposals = proposalsV1Beta1
+		s.logger.Debug("Using v1beta1 API (v1 failed)", zap.String("chain", chain.GetName()), zap.Error(errV1))
 	}
 
 	s.logger.Debug("Fetched proposals",
