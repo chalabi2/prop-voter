@@ -438,6 +438,7 @@ func (m *Manager) compileFromSource(ctx context.Context, chain *config.ChainConf
 	)
 
 	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", branch, sourceRepo, cloneDir)
+	cloneCmd.Env = os.Environ() // Inherit environment for git as well
 	if output, err := cloneCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, output)
 	}
@@ -460,6 +461,17 @@ func (m *Manager) compileFromSource(ctx context.Context, chain *config.ChainConf
 
 	buildExecCmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
 	buildExecCmd.Dir = cloneDir
+
+	// Inherit environment variables including PATH so Go can be found
+	buildExecCmd.Env = os.Environ()
+
+	// Also try to detect and add Go paths explicitly
+	if goPath := os.Getenv("GOPATH"); goPath != "" {
+		buildExecCmd.Env = append(buildExecCmd.Env, "GOPATH="+goPath)
+	}
+	if goRoot := os.Getenv("GOROOT"); goRoot != "" {
+		buildExecCmd.Env = append(buildExecCmd.Env, "GOROOT="+goRoot)
+	}
 
 	if output, err := buildExecCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to build binary: %w\nOutput: %s", err, output)
