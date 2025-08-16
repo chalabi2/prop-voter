@@ -462,16 +462,36 @@ func (m *Manager) compileFromSource(ctx context.Context, chain *config.ChainConf
 	buildExecCmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
 	buildExecCmd.Dir = cloneDir
 
-	// Inherit environment variables including PATH so Go can be found
+	// Start with inherited environment
 	buildExecCmd.Env = os.Environ()
 
-	// Also try to detect and add Go paths explicitly
-	if goPath := os.Getenv("GOPATH"); goPath != "" {
-		buildExecCmd.Env = append(buildExecCmd.Env, "GOPATH="+goPath)
+	// Detect and add Go to PATH explicitly
+	goPath := m.findGoExecutable()
+	if goPath != "" {
+		m.logger.Info("Found Go executable", zap.String("path", goPath))
+		// Update PATH to include Go
+		currentPath := os.Getenv("PATH")
+		goBinDir := filepath.Dir(goPath)
+		newPath := goBinDir + ":" + currentPath
+		buildExecCmd.Env = m.updateEnvVar(buildExecCmd.Env, "PATH", newPath)
+	} else {
+		m.logger.Warn("Go executable not found in common locations, build may fail")
+	}
+
+	// Set Go environment variables
+	if goPathEnv := os.Getenv("GOPATH"); goPathEnv != "" {
+		buildExecCmd.Env = m.updateEnvVar(buildExecCmd.Env, "GOPATH", goPathEnv)
 	}
 	if goRoot := os.Getenv("GOROOT"); goRoot != "" {
-		buildExecCmd.Env = append(buildExecCmd.Env, "GOROOT="+goRoot)
+		buildExecCmd.Env = m.updateEnvVar(buildExecCmd.Env, "GOROOT", goRoot)
 	}
+
+	// Log the environment for debugging
+	m.logger.Debug("Build environment",
+		zap.String("PATH", m.getEnvVar(buildExecCmd.Env, "PATH")),
+		zap.String("GOPATH", m.getEnvVar(buildExecCmd.Env, "GOPATH")),
+		zap.String("GOROOT", m.getEnvVar(buildExecCmd.Env, "GOROOT")),
+	)
 
 	if output, err := buildExecCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to build binary: %w\nOutput: %s", err, output)
@@ -1190,6 +1210,64 @@ func (m *Manager) extractZipBinary(reader io.Reader, binaryPath, binaryName stri
 
 	// Extract from temp file
 	return m.extractFromZip(tempPath, binaryPath, binaryName)
+}
+
+// findGoExecutable searches for Go executable in common locations
+func (m *Manager) findGoExecutable() string {
+	// Common Go installation paths
+	commonPaths := []string{
+		"/usr/local/go/bin/go",
+		"/usr/bin/go",
+		"/snap/go/current/bin/go",
+		"/opt/go/bin/go",
+		"/home/go/bin/go",
+	}
+
+	// Check user's home directory
+	if home, err := os.UserHomeDir(); err == nil {
+		commonPaths = append(commonPaths,
+			filepath.Join(home, "go/bin/go"),
+			filepath.Join(home, ".local/go/bin/go"),
+		)
+	}
+
+	// Check current PATH first
+	if goPath, err := exec.LookPath("go"); err == nil {
+		return goPath
+	}
+
+	// Check common installation paths
+	for _, path := range commonPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	return ""
+}
+
+// updateEnvVar updates or adds an environment variable in the environment slice
+func (m *Manager) updateEnvVar(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, envVar := range env {
+		if strings.HasPrefix(envVar, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	// If not found, append it
+	return append(env, prefix+value)
+}
+
+// getEnvVar gets an environment variable value from the environment slice
+func (m *Manager) getEnvVar(env []string, key string) string {
+	prefix := key + "="
+	for _, envVar := range env {
+		if strings.HasPrefix(envVar, prefix) {
+			return strings.TrimPrefix(envVar, prefix)
+		}
+	}
+	return ""
 }
 
 // extractTarGzBinary extracts a binary from a tar.gz archive stream
