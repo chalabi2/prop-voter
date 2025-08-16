@@ -79,7 +79,7 @@ chains:
     rest: "https://lcd-stargaze.blockapsis.com"
     wallet_key: "my-stargaze-key"
 
-    # Chihuahua - Minimal source compilation (auto-detects everything!)
+    # Chihuahua - Multiple approaches for Go version compatibility
   - chain_name: "chihuahua"
     rpc: "https://rpc-chihuahua.blockapsis.com"
     rest: "https://lcd-chihuahua.blockapsis.com"
@@ -87,6 +87,9 @@ chains:
     binary_source:
       type: "source" # Auto-detects: repo from Chain Registry, latest version, make install
       ignore_go_version: true # Allow newer Go versions (bypass Go 1.20 requirement)
+      # Alternative approaches (choose one):
+      # build_command: "SKIP_GO_VERSION_CHECK=1 make install"  # Env var bypass
+      # build_command: "go install -mod=readonly ./cmd/chihuahuad"  # Direct Go build
 
   # OmniFlix - Even more minimal (will auto-fallback to source compilation)
   - chain_name: "omniflixhub"
@@ -175,9 +178,11 @@ chains:
 # 7. Go Version Management
 #    - Automatically detects Go version compatibility issues
 #    - Provides helpful suggestions for installation or PATH updates
-#    - Can be overridden for flexibility:
+#    - Multiple bypass options for flexibility:
 #    binary_source:
-#      ignore_go_version: true # Bypass Go version checks
+#      ignore_go_version: true # Smart bypass (tries env vars, then direct go build)
+#      build_command: "SKIP_GO_VERSION_CHECK=1 make install" # Explicit env var
+#      build_command: "go install -mod=readonly ./cmd/daemon" # Direct go build
 #      required_go_version: "go1.21" # Override detected requirement
 
 # Binary source options work with both Chain Registry and legacy formats.

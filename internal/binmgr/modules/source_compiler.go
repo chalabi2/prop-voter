@@ -93,14 +93,27 @@ func (s *SourceCompiler) cloneRepository(ctx context.Context, sourceRepo, branch
 
 // buildBinary builds the binary using the specified build command
 func (s *SourceCompiler) buildBinary(ctx context.Context, chain *config.ChainConfig, cloneDir, buildCmd, buildTarget string) error {
+	// If ignoring Go version, use a build command that bypasses version checks
+	if chain.BinarySource.IgnoreGoVersion {
+		buildCmd = s.getBuildCommandForIgnoreGoVersion(cloneDir, buildTarget, buildCmd)
+		s.logger.Info("Using Go version bypass build command",
+			zap.String("chain", chain.GetName()),
+			zap.String("original_command", chain.GetBuildCommand()),
+			zap.String("bypass_command", buildCmd),
+		)
+	}
+
 	s.logger.Info("Building binary",
 		zap.String("command", buildCmd),
 		zap.String("target", buildTarget),
 		zap.String("dir", cloneDir),
 	)
 
+	// Parse command and environment variables
+	envVars, cleanCmd := s.parseEnvVarsFromCommand(buildCmd)
+
 	// Execute build command in the cloned directory
-	cmdParts := strings.Fields(buildCmd)
+	cmdParts := strings.Fields(cleanCmd)
 	if len(cmdParts) == 0 {
 		return fmt.Errorf("empty build command")
 	}
@@ -111,6 +124,15 @@ func (s *SourceCompiler) buildBinary(ctx context.Context, chain *config.ChainCon
 	// Setup environment for build
 	if err := s.setupBuildEnvironment(buildExecCmd); err != nil {
 		return err
+	}
+
+	// Add any command-specific environment variables
+	for key, value := range envVars {
+		buildExecCmd.Env = s.platformDetector.UpdateEnvVar(buildExecCmd.Env, key, value)
+		s.logger.Debug("Added environment variable for build",
+			zap.String("key", key),
+			zap.String("value", value),
+		)
 	}
 
 	// Execute build and capture output
@@ -340,4 +362,62 @@ func (s *SourceCompiler) extractRequiredGoVersion(output string) string {
 	}
 
 	return ""
+}
+
+// getBuildCommandForIgnoreGoVersion returns a build command that bypasses Go version checks
+func (s *SourceCompiler) getBuildCommandForIgnoreGoVersion(cloneDir, buildTarget, originalCmd string) string {
+	// Strategy 1: Try direct go build/install bypassing make
+	// Most Cosmos chains follow standard patterns, so we can build directly
+
+	// Check if there's a cmd directory structure (common in Cosmos projects)
+	cmdDirs := []string{
+		filepath.Join(cloneDir, "cmd", buildTarget),
+		filepath.Join(cloneDir, "cmd", "daemon"),
+		filepath.Join(cloneDir, "cmd"),
+	}
+
+	for _, cmdDir := range cmdDirs {
+		if _, err := os.Stat(cmdDir); err == nil {
+			relPath, _ := filepath.Rel(cloneDir, cmdDir)
+			return fmt.Sprintf("go install -mod=readonly -ldflags '-w -s' ./%s", relPath)
+		}
+	}
+
+	// Strategy 2: Try make with version check override
+	// Many Cosmos chains support environment variables to bypass checks
+	if strings.Contains(originalCmd, "make") {
+		// Common environment variables that bypass version checks
+		return "SKIP_GO_VERSION_CHECK=1 " + originalCmd
+	}
+
+	// Strategy 3: Direct go install (fallback)
+	return "go install -mod=readonly -ldflags '-w -s' ./cmd/..."
+}
+
+// parseEnvVarsFromCommand separates environment variables from the command
+func (s *SourceCompiler) parseEnvVarsFromCommand(cmd string) (map[string]string, string) {
+	envVars := make(map[string]string)
+	parts := strings.Fields(cmd)
+
+	var cmdStart int
+	for i, part := range parts {
+		if strings.Contains(part, "=") && !strings.HasPrefix(part, "-") {
+			// This looks like an environment variable
+			envParts := strings.SplitN(part, "=", 2)
+			if len(envParts) == 2 {
+				envVars[envParts[0]] = envParts[1]
+				continue
+			}
+		}
+		// First non-env-var part is the start of the actual command
+		cmdStart = i
+		break
+	}
+
+	if cmdStart < len(parts) {
+		cleanCmd := strings.Join(parts[cmdStart:], " ")
+		return envVars, cleanCmd
+	}
+
+	return envVars, cmd
 }
