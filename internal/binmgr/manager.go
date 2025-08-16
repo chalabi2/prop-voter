@@ -206,6 +206,8 @@ func (m *Manager) acquireBinary(ctx context.Context, chain *config.ChainConfig) 
 		return m.downloadFromGitHub(ctx, chain)
 	default:
 		// Fallback: try registry first, then github, then source compilation
+		m.logger.Info("Using automatic fallback strategy (registry → github → source compilation)")
+
 		if err := m.downloadFromRegistry(ctx, chain); err != nil {
 			m.logger.Warn("Registry download failed, trying GitHub", zap.Error(err))
 			if err := m.downloadFromGitHub(ctx, chain); err != nil {
@@ -561,7 +563,26 @@ func (m *Manager) downloadFromRegistry(ctx context.Context, chain *config.ChainC
 		zap.String("version", binaryInfo.Version),
 	)
 
-	return m.downloadFromGitHubWithInfo(ctx, chain, binaryInfo)
+	if err := m.downloadFromGitHubWithInfo(ctx, chain, binaryInfo); err != nil {
+		// GitHub releases failed - try automatic source compilation as final fallback
+		m.logger.Warn("GitHub releases failed for Chain Registry chain, attempting automatic source compilation",
+			zap.String("chain", chain.GetName()),
+			zap.Error(err),
+		)
+
+		// Check if user explicitly disabled source compilation
+		if chain.ShouldCompileFromSource() || chain.GetSourceRepo() != "" || (!chain.HasCustomBinaryURL() && chain.BinarySource.Type == "") {
+			m.logger.Info("Attempting automatic source compilation for Chain Registry chain",
+				zap.String("chain", chain.GetName()),
+				zap.String("repo", binaryInfo.Owner+"/"+binaryInfo.Repo),
+			)
+			return m.compileFromSource(ctx, chain)
+		}
+
+		return fmt.Errorf("all binary acquisition methods failed for Chain Registry chain: %w", err)
+	}
+
+	return nil
 }
 
 // downloadFromGitHub downloads a binary from GitHub releases using legacy config
