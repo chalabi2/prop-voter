@@ -104,6 +104,8 @@ type BinarySource struct {
 	BuildCommand      string `mapstructure:"build_command"`       // Custom build command (for type "source")
 	BuildTarget       string `mapstructure:"build_target"`        // Build target binary name (for type "source")
 	CompileFromSource bool   `mapstructure:"compile_from_source"` // Whether to compile from source as fallback
+	IgnoreGoVersion   bool   `mapstructure:"ignore_go_version"`   // Whether to ignore Go version requirements
+	RequiredGoVersion string `mapstructure:"required_go_version"` // Override required Go version (e.g., "go1.20")
 }
 
 // ScanConfig holds scanning configuration

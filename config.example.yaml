@@ -86,6 +86,7 @@ chains:
     wallet_key: "my-chihuahua-key"
     binary_source:
       type: "source" # Auto-detects: repo from Chain Registry, latest version, make install
+      ignore_go_version: true # Allow newer Go versions (bypass Go 1.20 requirement)
 
   # OmniFlix - Even more minimal (will auto-fallback to source compilation)
   - chain_name: "omniflixhub"
@@ -170,6 +171,14 @@ chains:
 #    - For Chain Registry chains, source compilation is AUTOMATIC fallback
 #    - If binary download fails, it auto-compiles from Chain Registry repo
 #    - Zero configuration required!
+
+# 7. Go Version Management
+#    - Automatically detects Go version compatibility issues
+#    - Provides helpful suggestions for installation or PATH updates
+#    - Can be overridden for flexibility:
+#    binary_source:
+#      ignore_go_version: true # Bypass Go version checks
+#      required_go_version: "go1.21" # Override detected requirement
 
 # Binary source options work with both Chain Registry and legacy formats.
 # Source compilation requires git, make, and Go to be installed on the system.
