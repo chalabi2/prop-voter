@@ -175,17 +175,22 @@ func main() {
 		logger.Fatal("Failed to start health server", zap.Error(err))
 	}
 
-	// Start binary manager in a goroutine
+	// Setup binaries first (synchronously)
+	if err := binaryManager.SetupBinariesSync(ctx); err != nil {
+		logger.Error("Failed to setup binaries", zap.Error(err))
+	}
+
+	// Setup keys after binaries are ready
+	if err := keyManager.SetupKeys(ctx); err != nil {
+		logger.Error("Failed to setup keys", zap.Error(err))
+	}
+
+	// Start binary manager background monitoring in a goroutine
 	go func() {
 		if err := binaryManager.Start(ctx); err != nil && err != context.Canceled {
 			logger.Error("Binary manager error", zap.Error(err))
 		}
 	}()
-
-	// Setup keys
-	if err := keyManager.SetupKeys(ctx); err != nil {
-		logger.Error("Failed to setup keys", zap.Error(err))
-	}
 
 	// Start Discord bot
 	if err := bot.Start(ctx); err != nil {

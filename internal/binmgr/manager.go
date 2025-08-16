@@ -55,8 +55,8 @@ func NewManager(config *config.Config, logger *zap.Logger, registryManager *regi
 	}
 }
 
-// Start begins the binary management process
-func (m *Manager) Start(ctx context.Context) error {
+// SetupBinariesSync performs initial binary setup synchronously (before key setup)
+func (m *Manager) SetupBinariesSync(ctx context.Context) error {
 	if !m.config.BinaryManager.Enabled {
 		m.logger.Info("Binary manager disabled")
 		return nil
@@ -67,16 +67,31 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create bin directory: %w", err)
 	}
 
-	m.logger.Info("Starting binary manager",
+	m.logger.Info("Setting up binaries",
 		zap.String("bin_dir", m.config.BinaryManager.BinDir),
-		zap.Duration("check_interval", m.config.BinaryManager.CheckInterval),
-		zap.Bool("auto_update", m.config.BinaryManager.AutoUpdate),
 	)
 
 	// Initial setup - download missing binaries
 	if err := m.setupBinaries(ctx); err != nil {
 		m.logger.Error("Failed to setup binaries", zap.Error(err))
+		return err
 	}
+
+	m.logger.Info("Binary setup completed")
+	return nil
+}
+
+// Start begins the binary management background monitoring process
+func (m *Manager) Start(ctx context.Context) error {
+	if !m.config.BinaryManager.Enabled {
+		m.logger.Info("Binary manager disabled")
+		return nil
+	}
+
+	m.logger.Info("Starting binary manager background monitoring",
+		zap.Duration("check_interval", m.config.BinaryManager.CheckInterval),
+		zap.Bool("auto_update", m.config.BinaryManager.AutoUpdate),
+	)
 
 	// Start periodic update checker
 	ticker := time.NewTicker(m.config.BinaryManager.CheckInterval)
