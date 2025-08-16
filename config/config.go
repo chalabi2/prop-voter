@@ -59,6 +59,9 @@ type ChainConfig struct {
 	LogoURL    string     `mapstructure:"logo_url"`
 	BinaryRepo BinaryRepo `mapstructure:"binary_repo"`
 
+	// Binary source configuration (works for both formats)
+	BinarySource BinarySource `mapstructure:"binary_source"`
+
 	// Runtime fields populated from Chain Registry (not in config file)
 	RegistryInfo *ChainRegistryInfo `mapstructure:"-"`
 }
@@ -90,6 +93,17 @@ type BinaryRepo struct {
 	Repo         string `mapstructure:"repo"`          // Repository name
 	AssetPattern string `mapstructure:"asset_pattern"` // Pattern to match release assets (e.g., "*linux-amd64*")
 	Enabled      bool   `mapstructure:"enabled"`       // Whether to auto-update this binary
+}
+
+// BinarySource represents different ways to obtain binaries
+type BinarySource struct {
+	Type              string `mapstructure:"type"`                // "registry", "github", "url", "source"
+	CustomURL         string `mapstructure:"custom_url"`          // Direct URL to binary (for type "url")
+	SourceRepo        string `mapstructure:"source_repo"`         // Git repository URL (for type "source")
+	SourceBranch      string `mapstructure:"source_branch"`       // Git branch/tag to build (for type "source")
+	BuildCommand      string `mapstructure:"build_command"`       // Custom build command (for type "source")
+	BuildTarget       string `mapstructure:"build_target"`        // Build target binary name (for type "source")
+	CompileFromSource bool   `mapstructure:"compile_from_source"` // Whether to compile from source as fallback
 }
 
 // ScanConfig holds scanning configuration
@@ -232,4 +246,83 @@ func (c *ChainConfig) GetGranterName() string {
 		return c.Authz.GranterName
 	}
 	return c.Authz.GranterAddr
+}
+
+// GetBinarySourceType returns the preferred binary source type for this chain
+func (c *ChainConfig) GetBinarySourceType() string {
+	if c.BinarySource.Type != "" {
+		return c.BinarySource.Type
+	}
+
+	// Default behavior based on current config
+	if c.UsesChainRegistry() {
+		return "registry"
+	} else if c.BinaryRepo.Enabled {
+		return "github"
+	}
+
+	return "registry" // fallback
+}
+
+// HasCustomBinaryURL returns true if chain has a custom binary URL configured
+func (c *ChainConfig) HasCustomBinaryURL() bool {
+	return c.BinarySource.CustomURL != ""
+}
+
+// GetCustomBinaryURL returns the custom binary URL if configured
+func (c *ChainConfig) GetCustomBinaryURL() string {
+	return c.BinarySource.CustomURL
+}
+
+// ShouldCompileFromSource returns true if this chain should compile from source
+func (c *ChainConfig) ShouldCompileFromSource() bool {
+	return c.BinarySource.Type == "source" || c.BinarySource.CompileFromSource
+}
+
+// GetSourceRepo returns the source repository URL for compilation
+func (c *ChainConfig) GetSourceRepo() string {
+	if c.BinarySource.SourceRepo != "" {
+		return c.BinarySource.SourceRepo
+	}
+
+	// Fallback to Chain Registry git repo if available
+	if c.RegistryInfo != nil && c.RegistryInfo.GitRepo != "" {
+		return c.RegistryInfo.GitRepo
+	}
+
+	return ""
+}
+
+// GetSourceBranch returns the source branch/tag to build
+func (c *ChainConfig) GetSourceBranch() string {
+	if c.BinarySource.SourceBranch != "" {
+		return c.BinarySource.SourceBranch
+	}
+
+	// Fallback to Chain Registry version if available
+	if c.RegistryInfo != nil && c.RegistryInfo.Version != "" {
+		return c.RegistryInfo.Version
+	}
+
+	return "main" // default branch
+}
+
+// GetBuildCommand returns the build command for source compilation
+func (c *ChainConfig) GetBuildCommand() string {
+	if c.BinarySource.BuildCommand != "" {
+		return c.BinarySource.BuildCommand
+	}
+
+	// Default build command - try install first (more common), then build
+	return "make install"
+}
+
+// GetBuildTarget returns the build target binary name
+func (c *ChainConfig) GetBuildTarget() string {
+	if c.BinarySource.BuildTarget != "" {
+		return c.BinarySource.BuildTarget
+	}
+
+	// Default to CLI name
+	return c.GetCLIName()
 }

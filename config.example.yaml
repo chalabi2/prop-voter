@@ -43,7 +43,7 @@ chains:
   # === CHAIN REGISTRY FORMAT (RECOMMENDED) ===
   # Just 4 lines per chain! Everything else auto-discovered from official Cosmos Chain Registry
 
-  # Osmosis - Chain Registry format
+  # Osmosis - Chain Registry format (standard)
   - chain_name: "osmosis" # Chain Registry identifier (case-sensitive)
     rpc: "https://rpc-osmosis.blockapsis.com"
     rest: "https://lcd-osmosis.blockapsis.com"
@@ -56,23 +56,43 @@ chains:
     # Auto-discovered: chain_id="osmosis-1", daemon="osmosisd", denom="uosmo",
     #                  prefix="osmo", version, binary_url, logo_url, etc.
 
-  # Juno - Chain Registry format
+  # Juno - Chain Registry format with custom binary URL
   - chain_name: "juno"
     rpc: "https://rpc-juno.blockapsis.com"
     rest: "https://lcd-juno.blockapsis.com"
     wallet_key: "my-juno-key"
+    binary_source:
+      type: "url" # Override with custom binary URL
+      custom_url: "https://github.com/CosmosContracts/juno/releases/download/v27.0.0/junod-linux-amd64"
 
-  # Akash - Chain Registry format
+  # Akash - Chain Registry format with source compilation fallback
   - chain_name: "akash"
     rpc: "https://rpc-akash.blockapsis.com"
     rest: "https://lcd-akash.blockapsis.com"
     wallet_key: "my-akash-key"
+    binary_source:
+      compile_from_source: true # Just this! Auto-detects repo, version, build command
 
   # Stargaze - Chain Registry format
   - chain_name: "stargaze"
     rpc: "https://rpc-stargaze.blockapsis.com"
     rest: "https://lcd-stargaze.blockapsis.com"
     wallet_key: "my-stargaze-key"
+
+    # Chihuahua - Minimal source compilation (auto-detects everything!)
+  - chain_name: "chihuahua"
+    rpc: "https://rpc-chihuahua.blockapsis.com"
+    rest: "https://lcd-chihuahua.blockapsis.com"
+    wallet_key: "my-chihuahua-key"
+    binary_source:
+      type: "source" # Auto-detects: repo from Chain Registry, latest version, make install
+
+  # OmniFlix - Even more minimal (will auto-fallback to source compilation)
+  - chain_name: "omniflixhub"
+    rpc: "https://rpc-omniflix.blockapsis.com"
+    rest: "https://lcd-omniflix.blockapsis.com"
+    wallet_key: "my-omniflix-key"
+    # No binary_source needed! Will try registry/github first, then auto-compile
 
   # === LEGACY FORMAT ===
   # Use this format for chains not in the Chain Registry or when you need full control
@@ -109,6 +129,51 @@ chains:
   #     owner: "custom-org"
   #     repo: "custom-chain"
   #     asset_pattern: "*linux-amd64*"
+# === BINARY SOURCE CONFIGURATION ===
+# Prop-Voter supports multiple ways to obtain chain binaries:
+
+# 1. Chain Registry (type: "registry" or omit type)
+#    - Auto-downloads from Chain Registry binary URLs
+#    - Falls back to GitHub releases if no URL available
+#    - Default for chains using chain_name
+
+# 2. GitHub Releases (type: "github")
+#    - Downloads from GitHub releases using asset patterns
+#    - Good for legacy configs or custom repos
+
+# 3. Custom URL (type: "url")
+#    - Downloads directly from a specified URL
+#    - Useful for specific binary versions or custom builds
+#    binary_source:
+#      type: "url"
+#      custom_url: "https://example.com/path/to/binary"
+
+# 4. Source Compilation (type: "source")
+#    - Clones repository and compiles from source
+#    - Best for chains without pre-compiled binaries
+#    - MINIMAL CONFIG: Just set type: "source" - everything else auto-detected!
+#    binary_source:
+#      type: "source" # Auto-detects repo, version, build command, target
+#      # Optional overrides:
+#      # source_repo: "https://github.com/org/repo" # Auto-detected from Chain Registry
+#      # source_branch: "v1.0.0" # Auto-detected from Chain Registry version
+#      # build_command: "make install" # Default, can override with "make build"
+#      # build_target: "chaind" # Auto-detected from Chain Registry daemon name
+
+# 5. Fallback Compilation (compile_from_source: true)
+#    - Tries normal download first, compiles if that fails
+#    - SUPER MINIMAL: Just one line enables smart fallback!
+#    binary_source:
+#      compile_from_source: true # That's it! Everything else auto-detected
+
+# 6. Automatic Fallback (NO CONFIG NEEDED!)
+#    - For Chain Registry chains, source compilation is AUTOMATIC fallback
+#    - If binary download fails, it auto-compiles from Chain Registry repo
+#    - Zero configuration required!
+
+# Binary source options work with both Chain Registry and legacy formats.
+# Source compilation requires git, make, and Go to be installed on the system.
+
 # === SUPPORTED CHAIN REGISTRY CHAINS ===
 # Use these exact chain_name values for Chain Registry format:
 # cosmoshub, osmosis, juno, akash, kujira, stargaze, injective, stride, evmos,

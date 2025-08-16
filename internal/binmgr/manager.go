@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -49,6 +50,50 @@ type BinaryInfo struct {
 	Version     string
 	Path        string
 	LastUpdated time.Time
+}
+
+// PlatformInfo holds platform-specific information
+type PlatformInfo struct {
+	OS           string
+	Arch         string
+	OSVariants   []string // Alternative OS names (e.g., ["linux", "Linux"])
+	ArchVariants []string // Alternative arch names (e.g., ["amd64", "x86_64"])
+}
+
+// GetCurrentPlatform returns detailed platform information with variants
+func GetCurrentPlatform() *PlatformInfo {
+	os := runtime.GOOS
+	arch := runtime.GOARCH
+
+	osVariants := []string{os}
+	archVariants := []string{arch}
+
+	// Add common OS variants
+	switch os {
+	case "linux":
+		osVariants = append(osVariants, "Linux", "linux")
+	case "darwin":
+		osVariants = append(osVariants, "Darwin", "macOS", "macos", "osx")
+	case "windows":
+		osVariants = append(osVariants, "Windows", "win", "Win")
+	}
+
+	// Add common architecture variants
+	switch arch {
+	case "amd64":
+		archVariants = append(archVariants, "x86_64", "x64", "64")
+	case "arm64":
+		archVariants = append(archVariants, "aarch64", "arm")
+	case "386":
+		archVariants = append(archVariants, "i386", "x86", "32")
+	}
+
+	return &PlatformInfo{
+		OS:           os,
+		Arch:         arch,
+		OSVariants:   osVariants,
+		ArchVariants: archVariants,
+	}
 }
 
 // NewManager creates a new binary manager
@@ -105,19 +150,20 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) setupBinaries(ctx context.Context) error {
 	for _, chain := range m.config.Chains {
 		// Skip if binary management not enabled for this chain
-		if !chain.UsesChainRegistry() && !chain.BinaryRepo.Enabled {
+		if !m.shouldManageBinary(&chain) {
 			continue
 		}
 
 		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
 		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-			m.logger.Info("Binary not found, downloading",
+			m.logger.Info("Binary not found, attempting to acquire",
 				zap.String("chain", chain.GetName()),
 				zap.String("cli", chain.GetCLIName()),
+				zap.String("source_type", chain.GetBinarySourceType()),
 			)
 
-			if err := m.downloadLatestBinary(ctx, &chain); err != nil {
-				m.logger.Error("Failed to download binary",
+			if err := m.acquireBinary(ctx, &chain); err != nil {
+				m.logger.Error("Failed to acquire binary",
 					zap.String("chain", chain.GetName()),
 					zap.Error(err),
 				)
@@ -127,6 +173,57 @@ func (m *Manager) setupBinaries(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// shouldManageBinary determines if a binary should be managed for the given chain
+func (m *Manager) shouldManageBinary(chain *config.ChainConfig) bool {
+	// Custom URL or source compilation is always managed
+	if chain.HasCustomBinaryURL() || chain.ShouldCompileFromSource() {
+		return true
+	}
+
+	// Standard registry/github management
+	return chain.UsesChainRegistry() || chain.BinaryRepo.Enabled
+}
+
+// acquireBinary attempts to acquire a binary using the configured source type
+func (m *Manager) acquireBinary(ctx context.Context, chain *config.ChainConfig) error {
+	sourceType := chain.GetBinarySourceType()
+
+	m.logger.Info("Acquiring binary",
+		zap.String("chain", chain.GetName()),
+		zap.String("source_type", sourceType),
+	)
+
+	switch sourceType {
+	case "url":
+		return m.downloadFromCustomURL(ctx, chain)
+	case "source":
+		return m.compileFromSource(ctx, chain)
+	case "registry":
+		return m.downloadFromRegistry(ctx, chain)
+	case "github":
+		return m.downloadFromGitHub(ctx, chain)
+	default:
+		// Fallback: try registry first, then github, then source compilation
+		if err := m.downloadFromRegistry(ctx, chain); err != nil {
+			m.logger.Warn("Registry download failed, trying GitHub", zap.Error(err))
+			if err := m.downloadFromGitHub(ctx, chain); err != nil {
+				m.logger.Warn("GitHub download failed, trying source compilation", zap.Error(err))
+				// Always try source compilation as final fallback if we have a repo
+				if chain.ShouldCompileFromSource() || chain.GetSourceRepo() != "" {
+					return m.compileFromSource(ctx, chain)
+				}
+				// For Chain Registry chains, we always have a git repo, so try source compilation
+				if chain.UsesChainRegistry() {
+					m.logger.Info("Attempting automatic source compilation for Chain Registry chain")
+					return m.compileFromSource(ctx, chain)
+				}
+				return fmt.Errorf("all binary acquisition methods failed: %w", err)
+			}
+		}
+		return nil
+	}
 }
 
 // checkForUpdates checks for and optionally downloads binary updates
@@ -293,51 +390,219 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// downloadLatestBinary downloads the latest binary for a chain
-func (m *Manager) downloadLatestBinary(ctx context.Context, chain *config.ChainConfig) error {
-	if chain.UsesChainRegistry() {
-		// Use Chain Registry binary URL
-		binaryInfo, err := m.getBinaryInfoForChain(ctx, chain)
-		if err != nil {
-			return fmt.Errorf("failed to get binary info from registry: %w", err)
-		}
-
-		// Check if Chain Registry provides a direct binary URL
-		if binaryInfo.BinaryURL != "" {
-			return m.downloadBinaryFromURL(ctx, chain, binaryInfo.BinaryURL, binaryInfo.Version)
-		}
-
-		// Chain Registry doesn't provide binary URL - fall back to GitHub releases
-		m.logger.Info("No binary URL in Chain Registry, falling back to GitHub releases",
-			zap.String("chain", chain.GetName()),
-			zap.String("repo", binaryInfo.Owner+"/"+binaryInfo.Repo),
-			zap.String("version", binaryInfo.Version),
-		)
-
-		// Convert to legacy-style repo config for GitHub API
-		legacyRepo := config.BinaryRepo{
-			Enabled:      true,
-			Owner:        binaryInfo.Owner,
-			Repo:         binaryInfo.Repo,
-			AssetPattern: fmt.Sprintf("*%s_%s*", runtime.GOOS, runtime.GOARCH), // e.g., *linux_amd64*
-		}
-
-		// Get release and download
-		release, err := m.getLatestRelease(ctx, legacyRepo)
-		if err != nil {
-			return fmt.Errorf("failed to get latest release for Chain Registry fallback: %w", err)
-		}
-
-		return m.downloadBinaryFromRelease(ctx, chain, release)
+// downloadFromCustomURL downloads a binary from a custom URL
+func (m *Manager) downloadFromCustomURL(ctx context.Context, chain *config.ChainConfig) error {
+	if !chain.HasCustomBinaryURL() {
+		return fmt.Errorf("no custom binary URL configured for chain %s", chain.GetName())
 	}
 
-	// Legacy format: use GitHub releases
+	customURL := chain.GetCustomBinaryURL()
+	m.logger.Info("Downloading binary from custom URL",
+		zap.String("chain", chain.GetName()),
+		zap.String("url", customURL),
+	)
+
+	return m.downloadBinaryFromURL(ctx, chain, customURL, "custom")
+}
+
+// compileFromSource compiles a binary from source code
+func (m *Manager) compileFromSource(ctx context.Context, chain *config.ChainConfig) error {
+	sourceRepo := chain.GetSourceRepo()
+	if sourceRepo == "" {
+		return fmt.Errorf("no source repository configured for chain %s", chain.GetName())
+	}
+
+	m.logger.Info("Compiling binary from source",
+		zap.String("chain", chain.GetName()),
+		zap.String("repo", sourceRepo),
+		zap.String("branch", chain.GetSourceBranch()),
+	)
+
+	// Create temporary directory for cloning
+	tempDir, err := os.MkdirTemp("", "prop-voter-build-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Clone the repository
+	cloneDir := filepath.Join(tempDir, "source")
+	branch := chain.GetSourceBranch()
+
+	m.logger.Info("Cloning repository",
+		zap.String("repo", sourceRepo),
+		zap.String("branch", branch),
+		zap.String("dir", cloneDir),
+	)
+
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--branch", branch, sourceRepo, cloneDir)
+	if output, err := cloneCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, output)
+	}
+
+	// Build the binary
+	buildCmd := chain.GetBuildCommand()
+	buildTarget := chain.GetBuildTarget()
+
+	m.logger.Info("Building binary",
+		zap.String("command", buildCmd),
+		zap.String("target", buildTarget),
+		zap.String("dir", cloneDir),
+	)
+
+	// Execute build command in the cloned directory
+	cmdParts := strings.Fields(buildCmd)
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("empty build command")
+	}
+
+	buildExecCmd := exec.CommandContext(ctx, cmdParts[0], cmdParts[1:]...)
+	buildExecCmd.Dir = cloneDir
+
+	if output, err := buildExecCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to build binary: %w\nOutput: %s", err, output)
+	}
+
+	// Find the built binary
+	var builtBinaryPath string
+
+	// For 'make install', check if binary is now in Go bin or local bin
+	goBinPath := os.Getenv("GOBIN")
+	if goBinPath == "" {
+		if goPath := os.Getenv("GOPATH"); goPath != "" {
+			goBinPath = filepath.Join(goPath, "bin")
+		} else if home, err := os.UserHomeDir(); err == nil {
+			goBinPath = filepath.Join(home, "go", "bin")
+		}
+	}
+
+	// Common locations where binaries might be built or installed
+	possiblePaths := []string{
+		// Installed locations (for make install)
+		filepath.Join(goBinPath, buildTarget),
+		filepath.Join("/usr/local/bin", buildTarget),
+		filepath.Join(os.Getenv("HOME"), "go/bin", buildTarget),
+		// Build locations (for make build)
+		filepath.Join(cloneDir, "build", buildTarget),
+		filepath.Join(cloneDir, "bin", buildTarget),
+		filepath.Join(cloneDir, buildTarget),
+		filepath.Join(cloneDir, "cmd", buildTarget, buildTarget),
+		// Cosmos SDK common patterns
+		filepath.Join(cloneDir, "build", "bin", buildTarget),
+		filepath.Join(cloneDir, "cmd", "cosmosd", buildTarget),
+	}
+
+	for _, path := range possiblePaths {
+		if _, err := os.Stat(path); err == nil {
+			builtBinaryPath = path
+			m.logger.Debug("Found built binary",
+				zap.String("path", path),
+				zap.String("target", buildTarget),
+			)
+			break
+		}
+	}
+
+	if builtBinaryPath == "" {
+		// List what we actually found for debugging
+		m.logger.Warn("Could not find built binary, listing possible locations")
+		for _, path := range possiblePaths {
+			if stat, err := os.Stat(path); err == nil {
+				m.logger.Debug("Found file",
+					zap.String("path", path),
+					zap.Bool("is_dir", stat.IsDir()),
+					zap.Int64("size", stat.Size()),
+				)
+			}
+		}
+		return fmt.Errorf("could not find built binary %s in any expected location. Tried: %v", buildTarget, possiblePaths)
+	}
+
+	// Copy the built binary to the bin directory
+	finalBinaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
+	if err := m.copyFile(builtBinaryPath, finalBinaryPath); err != nil {
+		return fmt.Errorf("failed to copy built binary: %w", err)
+	}
+
+	// Make it executable
+	if err := os.Chmod(finalBinaryPath, 0755); err != nil {
+		return fmt.Errorf("failed to make binary executable: %w", err)
+	}
+
+	m.logger.Info("Successfully compiled and installed binary from source",
+		zap.String("chain", chain.GetName()),
+		zap.String("source", builtBinaryPath),
+		zap.String("dest", finalBinaryPath),
+	)
+
+	return nil
+}
+
+// downloadFromRegistry downloads a binary using Chain Registry information
+func (m *Manager) downloadFromRegistry(ctx context.Context, chain *config.ChainConfig) error {
+	if !chain.UsesChainRegistry() {
+		return fmt.Errorf("chain %s does not use Chain Registry", chain.GetName())
+	}
+
+	binaryInfo, err := m.getBinaryInfoForChain(ctx, chain)
+	if err != nil {
+		return fmt.Errorf("failed to get binary info from registry: %w", err)
+	}
+
+	// Check if Chain Registry provides a direct binary URL
+	if binaryInfo.BinaryURL != "" {
+		return m.downloadBinaryFromURL(ctx, chain, binaryInfo.BinaryURL, binaryInfo.Version)
+	}
+
+	// Chain Registry doesn't provide binary URL - fall back to GitHub releases
+	m.logger.Info("No binary URL in Chain Registry, falling back to GitHub releases",
+		zap.String("chain", chain.GetName()),
+		zap.String("repo", binaryInfo.Owner+"/"+binaryInfo.Repo),
+		zap.String("version", binaryInfo.Version),
+	)
+
+	return m.downloadFromGitHubWithInfo(ctx, chain, binaryInfo)
+}
+
+// downloadFromGitHub downloads a binary from GitHub releases using legacy config
+func (m *Manager) downloadFromGitHub(ctx context.Context, chain *config.ChainConfig) error {
+	if !chain.BinaryRepo.Enabled {
+		return fmt.Errorf("GitHub binary repo not enabled for chain %s", chain.GetName())
+	}
+
 	release, err := m.getLatestRelease(ctx, chain.BinaryRepo)
 	if err != nil {
 		return fmt.Errorf("failed to get latest release: %w", err)
 	}
 
 	return m.downloadBinaryFromRelease(ctx, chain, release)
+}
+
+// downloadFromGitHubWithInfo downloads from GitHub using registry binary info
+func (m *Manager) downloadFromGitHubWithInfo(ctx context.Context, chain *config.ChainConfig, binaryInfo *registry.BinaryInfo) error {
+	// Convert to legacy-style repo config for GitHub API
+	platform := GetCurrentPlatform()
+	assetPattern := fmt.Sprintf("*%s*%s*", platform.OS, platform.Arch)
+
+	legacyRepo := config.BinaryRepo{
+		Enabled:      true,
+		Owner:        binaryInfo.Owner,
+		Repo:         binaryInfo.Repo,
+		AssetPattern: assetPattern,
+	}
+
+	// Get release and download
+	release, err := m.getLatestRelease(ctx, legacyRepo)
+	if err != nil {
+		return fmt.Errorf("failed to get latest release for Chain Registry fallback: %w", err)
+	}
+
+	return m.downloadBinaryFromRelease(ctx, chain, release)
+}
+
+// downloadLatestBinary downloads the latest binary for a chain (legacy method)
+func (m *Manager) downloadLatestBinary(ctx context.Context, chain *config.ChainConfig) error {
+	return m.acquireBinary(ctx, chain)
 }
 
 // getBinaryInfoForChain gets binary information for a chain
@@ -533,17 +798,7 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 		return nil, fmt.Errorf("no binary assets found in release - this chain may not provide pre-compiled binaries")
 	}
 
-	platformParts := []string{runtime.GOOS, runtime.GOARCH}
-
-	// Common platform mappings
-	platformMap := map[string]string{
-		"darwin":  "darwin",
-		"linux":   "linux",
-		"windows": "windows",
-		"amd64":   "amd64",
-		"arm64":   "arm64",
-		"386":     "386",
-	}
+	platform := GetCurrentPlatform()
 
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
@@ -558,26 +813,32 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 			return &asset, nil
 		}
 
-		// Check if asset matches our platform
+		// Check if asset matches our platform using variants
 		osMatch := false
 		archMatch := false
 
-		for _, part := range platformParts {
-			mapped, exists := platformMap[part]
-			if !exists {
-				mapped = part
+		// Check all OS variants
+		for _, osVariant := range platform.OSVariants {
+			if strings.Contains(name, strings.ToLower(osVariant)) {
+				osMatch = true
+				break
 			}
+		}
 
-			if strings.Contains(name, mapped) {
-				if part == runtime.GOOS {
-					osMatch = true
-				} else if part == runtime.GOARCH {
-					archMatch = true
-				}
+		// Check all architecture variants
+		for _, archVariant := range platform.ArchVariants {
+			if strings.Contains(name, strings.ToLower(archVariant)) {
+				archMatch = true
+				break
 			}
 		}
 
 		if osMatch && archMatch {
+			m.logger.Debug("Found platform-specific asset",
+				zap.String("asset", asset.Name),
+				zap.String("os", platform.OS),
+				zap.String("arch", platform.Arch),
+			)
 			return &asset, nil
 		}
 	}
@@ -597,11 +858,17 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 		}
 	}
 
-	// Final fallback: try to find any asset that contains the OS
+	// Final fallback: try to find any asset that contains any OS variant
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, runtime.GOOS) {
-			return &asset, nil
+		for _, osVariant := range platform.OSVariants {
+			if strings.Contains(name, strings.ToLower(osVariant)) {
+				m.logger.Debug("Using OS-matched asset without architecture check",
+					zap.String("asset", asset.Name),
+					zap.String("os_variant", osVariant),
+				)
+				return &asset, nil
+			}
 		}
 	}
 
@@ -612,12 +879,12 @@ func (m *Manager) findAssetForPlatform(assets []Asset, pattern string) (*Asset, 
 	}
 
 	if pattern != "" {
-		return nil, fmt.Errorf("no suitable asset found for platform %s/%s with pattern '%s'. Available assets: %v",
-			runtime.GOOS, runtime.GOARCH, pattern, assetNames)
+		return nil, fmt.Errorf("no suitable asset found for platform %s/%s with pattern '%s'. Available assets: %v. Consider using source compilation as fallback",
+			platform.OS, platform.Arch, pattern, assetNames)
 	}
 
-	return nil, fmt.Errorf("no suitable asset found for platform %s/%s. Available assets: %v",
-		runtime.GOOS, runtime.GOARCH, assetNames)
+	return nil, fmt.Errorf("no suitable asset found for platform %s/%s. Available assets: %v. Consider using source compilation as fallback",
+		platform.OS, platform.Arch, assetNames)
 }
 
 // matchesPattern checks if a string matches a simple pattern (supports * wildcards)
