@@ -64,7 +64,7 @@ func (d *BinaryDownloader) DownloadFromCustomURL(ctx context.Context, chain *con
 		zap.String("url", customURL),
 	)
 
-	return d.downloadBinaryFromURL(ctx, chain, customURL, "custom")
+	return d.DownloadBinaryFromURL(ctx, chain, customURL, "custom")
 }
 
 // DownloadFromGitHubWithInfo downloads from GitHub using registry binary info
@@ -103,8 +103,8 @@ func (d *BinaryDownloader) DownloadFromGitHub(ctx context.Context, chain *config
 	return d.downloadBinaryFromRelease(ctx, chain, release)
 }
 
-// downloadBinaryFromURL downloads a binary from a direct URL
-func (d *BinaryDownloader) downloadBinaryFromURL(ctx context.Context, chain *config.ChainConfig, binaryURL, version string) error {
+// DownloadBinaryFromURL downloads a binary from a direct URL (public method)
+func (d *BinaryDownloader) DownloadBinaryFromURL(ctx context.Context, chain *config.ChainConfig, binaryURL, version string) error {
 	d.logger.Info("Downloading binary from URL",
 		zap.String("chain", chain.GetName()),
 		zap.String("version", version),

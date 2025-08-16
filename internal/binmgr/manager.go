@@ -24,10 +24,10 @@ type BinaryInfo struct {
 
 // Manager handles binary downloads and updates from multiple sources
 type Manager struct {
-	config           *config.Config
-	logger           *zap.Logger
-	registryManager  *registry.Manager
-	
+	config          *config.Config
+	logger          *zap.Logger
+	registryManager *registry.Manager
+
 	// Modules
 	platformDetector *modules.PlatformDetector
 	sourceCompiler   *modules.SourceCompiler
@@ -47,7 +47,7 @@ func NewManager(config *config.Config, logger *zap.Logger, registryManager *regi
 		config:          config,
 		logger:          logger,
 		registryManager: registryManager,
-		
+
 		platformDetector: platformDetector,
 		sourceCompiler:   sourceCompiler,
 		binaryDownloader: binaryDownloader,
@@ -156,7 +156,7 @@ func (m *Manager) acquireBinary(ctx context.Context, chain *config.ChainConfig) 
 	default:
 		// Fallback: try registry first, then github, then source compilation
 		m.logger.Info("Using automatic fallback strategy (registry → github → source compilation)")
-		
+
 		if err := m.downloadFromRegistry(ctx, chain); err != nil {
 			m.logger.Warn("Registry download failed, trying GitHub", zap.Error(err))
 			if err := m.binaryDownloader.DownloadFromGitHub(ctx, chain); err != nil {
@@ -190,7 +190,11 @@ func (m *Manager) downloadFromRegistry(ctx context.Context, chain *config.ChainC
 
 	// Check if Chain Registry provides a direct binary URL
 	if binaryInfo.BinaryURL != "" {
-		return m.binaryDownloader.DownloadFromCustomURL(ctx, chain)
+		m.logger.Info("Using binary URL from Chain Registry",
+			zap.String("chain", chain.GetName()),
+			zap.String("binary_url", binaryInfo.BinaryURL),
+		)
+		return m.downloadBinaryFromURL(ctx, chain, binaryInfo.BinaryURL, binaryInfo.Version)
 	}
 
 	// Chain Registry doesn't provide binary URL - fall back to GitHub releases
@@ -202,11 +206,11 @@ func (m *Manager) downloadFromRegistry(ctx context.Context, chain *config.ChainC
 
 	if err := m.binaryDownloader.DownloadFromGitHubWithInfo(ctx, chain, binaryInfo); err != nil {
 		// GitHub releases failed - try automatic source compilation as final fallback
-		m.logger.Warn("GitHub releases failed for Chain Registry chain, attempting automatic source compilation", 
+		m.logger.Warn("GitHub releases failed for Chain Registry chain, attempting automatic source compilation",
 			zap.String("chain", chain.GetName()),
 			zap.Error(err),
 		)
-		
+
 		// Check if user explicitly disabled source compilation
 		if chain.ShouldCompileFromSource() || chain.GetSourceRepo() != "" || (!chain.HasCustomBinaryURL() && chain.BinarySource.Type == "") {
 			m.logger.Info("Attempting automatic source compilation for Chain Registry chain",
@@ -215,17 +219,17 @@ func (m *Manager) downloadFromRegistry(ctx context.Context, chain *config.ChainC
 			)
 			return m.sourceCompiler.CompileFromSource(ctx, chain)
 		}
-		
+
 		return fmt.Errorf("all binary acquisition methods failed for Chain Registry chain: %w", err)
 	}
-	
+
 	return nil
 }
 
 // checkForUpdates checks for and optionally downloads binary updates
 func (m *Manager) checkForUpdates(ctx context.Context) error {
 	m.logger.Debug("Checking for binary updates")
-	
+
 	// For now, keep update logic simple - just check if binaries exist
 	return m.setupBinaries(ctx)
 }
@@ -273,4 +277,9 @@ func (m *Manager) UpdateBinary(ctx context.Context, chainName string) error {
 	}
 
 	return fmt.Errorf("chain %s not found or binary management not enabled", chainName)
+}
+
+// downloadBinaryFromURL downloads a binary from a direct URL (helper method)
+func (m *Manager) downloadBinaryFromURL(ctx context.Context, chain *config.ChainConfig, binaryURL, version string) error {
+	return m.binaryDownloader.DownloadBinaryFromURL(ctx, chain, binaryURL, version)
 }
