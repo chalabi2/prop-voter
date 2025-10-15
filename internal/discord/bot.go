@@ -841,6 +841,14 @@ func (b *Bot) queryVoteTally(chainConfig *config.ChainConfig, proposalID string)
 
 	for _, version := range apiVersions {
 		url := fmt.Sprintf("%s/cosmos/gov/%s/proposals/%s/tally", baseURL, version, proposalID)
+		if b.config.AuthEndpoints.Enabled && b.config.AuthEndpoints.APIKey != "" {
+			// Ensure api_key is appended as the very last query parameter
+			if strings.Contains(url, "?") {
+				url = url + "&api_key=" + b.config.AuthEndpoints.APIKey
+			} else {
+				url = url + "?api_key=" + b.config.AuthEndpoints.APIKey
+			}
+		}
 
 		b.logger.Info("Querying vote tally",
 			zap.String("chain", chainConfig.GetName()),

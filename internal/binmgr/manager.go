@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -119,13 +120,28 @@ func (m *Manager) setupBinaries(ctx context.Context) error {
 		}
 
 		binaryPath := filepath.Join(m.config.BinaryManager.BinDir, chain.GetCLIName())
+		needsAcquisition := false
+
 		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+			needsAcquisition = true
 			m.logger.Info("Binary not found, attempting to acquire",
 				zap.String("chain", chain.GetName()),
 				zap.String("cli", chain.GetCLIName()),
 				zap.String("source_type", chain.GetBinarySourceType()),
 			)
+		} else {
+			// Binary exists, but validate it's actually usable
+			if !m.validateBinary(binaryPath, chain.GetCLIName()) {
+				needsAcquisition = true
+				m.logger.Info("Binary exists but is invalid, re-acquiring",
+					zap.String("chain", chain.GetName()),
+					zap.String("cli", chain.GetCLIName()),
+					zap.String("path", binaryPath),
+				)
+			}
+		}
 
+		if needsAcquisition {
 			if err := m.acquireBinary(ctx, &chain); err != nil {
 				m.logger.Error("Failed to acquire binary",
 					zap.String("chain", chain.GetName()),
@@ -297,4 +313,31 @@ func (m *Manager) UpdateBinary(ctx context.Context, chainName string) error {
 // downloadBinaryFromURL downloads a binary from a direct URL (helper method)
 func (m *Manager) downloadBinaryFromURL(ctx context.Context, chain *config.ChainConfig, binaryURL, version string) error {
 	return m.binaryDownloader.DownloadBinaryFromURL(ctx, chain, binaryURL, version)
+}
+
+// validateBinary checks if an existing binary is actually usable
+func (m *Manager) validateBinary(binaryPath, cliName string) bool {
+	// Check if file is executable
+	if stat, err := os.Stat(binaryPath); err != nil {
+		return false
+	} else if stat.Mode()&0111 == 0 {
+		m.logger.Debug("Binary is not executable", zap.String("path", binaryPath))
+		return false
+	}
+
+	// Try to run a simple command to verify the binary works
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "version")
+	if err := cmd.Run(); err != nil {
+		m.logger.Debug("Binary failed version check",
+			zap.String("path", binaryPath),
+			zap.Error(err),
+		)
+		return false
+	}
+
+	m.logger.Debug("Binary validation passed", zap.String("path", binaryPath))
+	return true
 }

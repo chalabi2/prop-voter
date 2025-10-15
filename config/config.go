@@ -9,14 +9,15 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Discord       DiscordConfig   `mapstructure:"discord"`
-	Database      DatabaseConfig  `mapstructure:"database"`
-	Security      SecurityConfig  `mapstructure:"security"`
-	Chains        []ChainConfig   `mapstructure:"chains"`
-	Scanning      ScanConfig      `mapstructure:"scanning"`
-	Health        HealthConfig    `mapstructure:"health"`
-	BinaryManager BinaryMgrConfig `mapstructure:"binary_manager"`
-	KeyManager    KeyMgrConfig    `mapstructure:"key_manager"`
+	Discord       DiscordConfig       `mapstructure:"discord"`
+	Database      DatabaseConfig      `mapstructure:"database"`
+	Security      SecurityConfig      `mapstructure:"security"`
+	AuthEndpoints AuthEndpointsConfig `mapstructure:"auth_endpoints"`
+	Chains        []ChainConfig       `mapstructure:"chains"`
+	Scanning      ScanConfig          `mapstructure:"scanning"`
+	Health        HealthConfig        `mapstructure:"health"`
+	BinaryManager BinaryMgrConfig     `mapstructure:"binary_manager"`
+	KeyManager    KeyMgrConfig        `mapstructure:"key_manager"`
 }
 
 // DiscordConfig holds Discord bot configuration
@@ -35,6 +36,12 @@ type DatabaseConfig struct {
 type SecurityConfig struct {
 	EncryptionKey string `mapstructure:"encryption_key"`
 	VoteSecret    string `mapstructure:"vote_secret"`
+}
+
+// AuthEndpointsConfig controls optional API key query param on RPC/REST endpoints
+type AuthEndpointsConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	APIKey  string `mapstructure:"api_key"`
 }
 
 // ChainConfig represents a single Cosmos chain configuration
@@ -144,6 +151,8 @@ func LoadConfig(path string) (*Config, error) {
 	viper.SetConfigType("yaml")
 
 	// Set defaults
+	viper.SetDefault("auth_endpoints.enabled", false)
+	viper.SetDefault("auth_endpoints.api_key", "")
 	viper.SetDefault("scanning.interval", "5m")
 	viper.SetDefault("scanning.batch_size", 10)
 	viper.SetDefault("database.path", "./prop-voter.db")

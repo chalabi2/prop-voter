@@ -200,7 +200,7 @@ func (v *Voter) buildVoteCommandWithContext(ctx context.Context, chain *config.C
 		option,
 		"--from", chain.WalletKey,
 		"--chain-id", chain.GetChainID(),
-		"--node", chain.RPC,
+		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
 		"--gas", "auto",
 		"--gas-adjustment", "1.3",
 		"--fees", v.calculateFees(chain),
@@ -222,7 +222,7 @@ func (v *Voter) buildVoteCommand(chain *config.ChainConfig, proposalID, option s
 		option,
 		"--from", chain.WalletKey,
 		"--chain-id", chain.GetChainID(),
-		"--node", chain.RPC,
+		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
 		"--gas", "auto",
 		"--gas-adjustment", "1.3",
 		"--fees", v.calculateFees(chain),
@@ -265,7 +265,7 @@ func (v *Voter) buildAuthzVoteCommandWithContext(ctx context.Context, chain *con
 		msgFile,
 		"--from", chain.WalletKey,
 		"--chain-id", chain.GetChainID(),
-		"--node", chain.RPC,
+		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
 		"--gas", "auto",
 		"--gas-adjustment", "1.3",
 		"--fees", v.calculateFees(chain),
@@ -287,6 +287,17 @@ func (v *Voter) buildAuthzVoteCommandWithContext(ctx context.Context, chain *con
 	}()
 
 	return cmd
+}
+
+// appendAPIKeyIfEnabled appends the api_key query parameter to a base URL if configured
+func (v *Voter) appendAPIKeyIfEnabled(base string) string {
+	if v.config.AuthEndpoints.Enabled && v.config.AuthEndpoints.APIKey != "" {
+		if strings.Contains(base, "?") {
+			return base + "&api_key=" + v.config.AuthEndpoints.APIKey
+		}
+		return base + "?api_key=" + v.config.AuthEndpoints.APIKey
+	}
+	return base
 }
 
 // mapVoteOption maps user-friendly vote options to the format expected by governance
