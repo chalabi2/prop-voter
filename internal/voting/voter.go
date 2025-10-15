@@ -1,9 +1,12 @@
 package voting
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,63 +54,22 @@ func (v *Voter) Vote(chainID, proposalID, option string) (string, error) {
 		zap.String("option", option),
 	)
 
-	// Build the CLI command with timeout context
+	// Build, sign, encode, and broadcast via REST
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cmd := v.buildVoteCommandWithContext(ctx, chainConfig, proposalID, option)
-
-	// Always log the full CLI command string for visibility without debug mode
-	fullCmd := strings.Join(cmd.Args, " ")
-	v.logger.Info("Executing vote command", zap.String("command", fullCmd))
-	v.logger.Debug("Executing vote command (args)", zap.Strings("cmd", cmd.Args))
-
-	// Execute the command with timeout
-	output, err := cmd.CombinedOutput()
+	txHash, err := v.buildSignAndBroadcastGovVoteREST(ctx, chainConfig, proposalID, option)
 	if err != nil {
-		// Check if it was a timeout
-		if ctx.Err() == context.DeadlineExceeded {
-			v.logger.Error("Vote command timed out after 60 seconds",
-				zap.String("chain", chainConfig.GetName()),
-				zap.String("proposal_id", proposalID),
-			)
-			return "", fmt.Errorf("vote command timed out after 60 seconds - the transaction may still be processing")
-		}
-
-		v.logger.Error("Vote command failed",
-			zap.Error(err),
-			zap.String("output", string(output)),
-		)
-		return "", fmt.Errorf("vote command failed: %w - output: %s", err, string(output))
-	}
-
-	// Parse transaction response from CLI output
-	txResponse, err := v.parseTxResponse(string(output))
-	if err != nil {
-		v.logger.Warn("Could not parse transaction response",
-			zap.String("output", string(output)),
-			zap.Error(err),
-		)
-		return "UNKNOWN_HASH_CHECK_LOGS", nil
-	}
-
-	// Check if transaction was successful
-	if txResponse.Code != 0 {
-		v.logger.Error("Transaction failed",
-			zap.Int("code", txResponse.Code),
-			zap.String("codespace", txResponse.Codespace),
-			zap.String("tx_hash", txResponse.TxHash),
-		)
-		return "", fmt.Errorf("transaction failed with code %d: %s", txResponse.Code, txResponse.Codespace)
+		return "", err
 	}
 
 	v.logger.Info("Vote submitted successfully",
 		zap.String("chain", chainConfig.GetName()),
 		zap.String("proposal_id", proposalID),
-		zap.String("tx_hash", txResponse.TxHash),
+		zap.String("tx_hash", txHash),
 	)
 
-	return txResponse.TxHash, nil
+	return txHash, nil
 }
 
 // VoteAuthz submits an authz vote for a proposal on the specified chain on behalf of a granter
@@ -138,64 +100,23 @@ func (v *Voter) VoteAuthz(chainID, proposalID, option string) (string, error) {
 		zap.String("granter", chainConfig.GetGranterAddr()),
 	)
 
-	// Build the authz CLI command with timeout context
+	// Build, sign, encode, and broadcast via REST
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cmd := v.buildAuthzVoteCommandWithContext(ctx, chainConfig, proposalID, option)
-
-	// Always log the full CLI command string for visibility without debug mode
-	fullCmd := strings.Join(cmd.Args, " ")
-	v.logger.Info("Executing authz vote command", zap.String("command", fullCmd))
-	v.logger.Debug("Executing authz vote command (args)", zap.Strings("cmd", cmd.Args))
-
-	// Execute the command with timeout
-	output, err := cmd.CombinedOutput()
+	txHash, err := v.buildSignAndBroadcastAuthzVoteREST(ctx, chainConfig, proposalID, option)
 	if err != nil {
-		// Check if it was a timeout
-		if ctx.Err() == context.DeadlineExceeded {
-			v.logger.Error("Authz vote command timed out after 60 seconds",
-				zap.String("chain", chainConfig.GetName()),
-				zap.String("proposal_id", proposalID),
-			)
-			return "", fmt.Errorf("authz vote command timed out after 60 seconds - the transaction may still be processing")
-		}
-
-		v.logger.Error("Authz vote command failed",
-			zap.Error(err),
-			zap.String("output", string(output)),
-		)
-		return "", fmt.Errorf("authz vote command failed: %w - output: %s", err, string(output))
-	}
-
-	// Parse transaction response from CLI output
-	txResponse, err := v.parseTxResponse(string(output))
-	if err != nil {
-		v.logger.Warn("Could not parse authz transaction response",
-			zap.String("output", string(output)),
-			zap.Error(err),
-		)
-		return "UNKNOWN_HASH_CHECK_LOGS", nil
-	}
-
-	// Check if transaction was successful
-	if txResponse.Code != 0 {
-		v.logger.Error("Authz transaction failed",
-			zap.Int("code", txResponse.Code),
-			zap.String("codespace", txResponse.Codespace),
-			zap.String("tx_hash", txResponse.TxHash),
-		)
-		return "", fmt.Errorf("authz transaction failed with code %d: %s", txResponse.Code, txResponse.Codespace)
+		return "", err
 	}
 
 	v.logger.Info("Authz vote submitted successfully",
 		zap.String("chain", chainConfig.GetName()),
 		zap.String("proposal_id", proposalID),
-		zap.String("tx_hash", txResponse.TxHash),
+		zap.String("tx_hash", txHash),
 		zap.String("granter", chainConfig.GetGranterAddr()),
 	)
 
-	return txResponse.TxHash, nil
+	return txHash, nil
 }
 
 // buildVoteCommandWithContext builds the CLI command for voting with timeout context
@@ -293,6 +214,209 @@ func (v *Voter) buildAuthzVoteCommandWithContext(ctx context.Context, chain *con
 	}()
 
 	return cmd
+}
+
+// buildSignAndBroadcastGovVoteREST constructs, signs, encodes and broadcasts a gov vote via REST
+func (v *Voter) buildSignAndBroadcastGovVoteREST(ctx context.Context, chain *config.ChainConfig, proposalID, option string) (string, error) {
+	// 1) Build unsigned tx to temp file
+	unsignedFile := fmt.Sprintf("/tmp/unsigned_vote_%s_%s.json", chain.GetChainID(), proposalID)
+	buildArgs := []string{
+		"tx", "gov", "vote",
+		proposalID,
+		option,
+		"--from", chain.WalletKey,
+		"--chain-id", chain.GetChainID(),
+		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--gas", "auto",
+		"--gas-adjustment", "1.3",
+		"--fees", v.calculateFees(chain),
+		"--keyring-backend", "test",
+		"--generate-only",
+		"--output", "json",
+	}
+
+	if err := v.execToFileWithContext(ctx, chain.GetCLIName(), buildArgs, unsignedFile); err != nil {
+		return "", fmt.Errorf("failed to build unsigned tx: %w", err)
+	}
+
+	// 2) Sign the tx (online, queries via RPC are OK)
+	signedFile := fmt.Sprintf("/tmp/signed_vote_%s_%s.json", chain.GetChainID(), proposalID)
+	signArgs := []string{
+		"tx", "sign", unsignedFile,
+		"--from", chain.WalletKey,
+		"--chain-id", chain.GetChainID(),
+		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--keyring-backend", "test",
+		"--output", "json",
+	}
+	if err := v.execToFileWithContext(ctx, chain.GetCLIName(), signArgs, signedFile); err != nil {
+		return "", fmt.Errorf("failed to sign tx: %w", err)
+	}
+
+	// 3) Encode to base64 (tx_bytes)
+	txBytes, err := v.encodeTxFileToBase64WithContext(ctx, chain.GetCLIName(), signedFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode tx to base64: %w", err)
+	}
+
+	// 4) Broadcast via REST
+	txResp, err := v.broadcastTxBytesREST(ctx, chain, txBytes)
+	if err != nil {
+		return "", err
+	}
+	if txResp.Code != 0 {
+		return "", fmt.Errorf("transaction failed with code %d: %s", txResp.Code, txResp.Codespace)
+	}
+	return txResp.TxHash, nil
+}
+
+// buildSignAndBroadcastAuthzVoteREST constructs, signs, encodes and broadcasts an authz vote via REST
+func (v *Voter) buildSignAndBroadcastAuthzVoteREST(ctx context.Context, chain *config.ChainConfig, proposalID, option string) (string, error) {
+	// Prepare the authz exec message file
+	msgFile := fmt.Sprintf("/tmp/vote_msg_%s_%s.json", chain.GetChainID(), proposalID)
+	govVoteMsg := fmt.Sprintf(`{
+  "body": {
+    "messages": [
+      {
+        "@type": "/cosmos.gov.v1beta1.MsgVote",
+        "proposal_id": "%s",
+        "voter": "%s",
+        "option": "%s"
+      }
+    ]
+  }
+}`, proposalID, chain.GetGranterAddr(), v.mapVoteOption(option))
+	if err := os.WriteFile(msgFile, []byte(govVoteMsg), 0644); err != nil {
+		return "", fmt.Errorf("failed to write authz msg file: %w", err)
+	}
+	defer func() { _ = os.Remove(msgFile) }()
+
+	// 1) Build unsigned tx to temp file
+	unsignedFile := fmt.Sprintf("/tmp/unsigned_authz_vote_%s_%s.json", chain.GetChainID(), proposalID)
+	buildArgs := []string{
+		"tx", "authz", "exec",
+		msgFile,
+		"--from", chain.WalletKey,
+		"--chain-id", chain.GetChainID(),
+		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--gas", "auto",
+		"--gas-adjustment", "1.3",
+		"--fees", v.calculateFees(chain),
+		"--keyring-backend", "test",
+		"--generate-only",
+		"--output", "json",
+	}
+	if err := v.execToFileWithContext(ctx, chain.GetCLIName(), buildArgs, unsignedFile); err != nil {
+		return "", fmt.Errorf("failed to build unsigned authz tx: %w", err)
+	}
+
+	// 2) Sign the tx (online)
+	signedFile := fmt.Sprintf("/tmp/signed_authz_vote_%s_%s.json", chain.GetChainID(), proposalID)
+	signArgs := []string{
+		"tx", "sign", unsignedFile,
+		"--from", chain.WalletKey,
+		"--chain-id", chain.GetChainID(),
+		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--keyring-backend", "test",
+		"--output", "json",
+	}
+	if err := v.execToFileWithContext(ctx, chain.GetCLIName(), signArgs, signedFile); err != nil {
+		return "", fmt.Errorf("failed to sign authz tx: %w", err)
+	}
+
+	// 3) Encode to base64 (tx_bytes)
+	txBytes, err := v.encodeTxFileToBase64WithContext(ctx, chain.GetCLIName(), signedFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode authz tx to base64: %w", err)
+	}
+
+	// 4) Broadcast via REST
+	txResp, err := v.broadcastTxBytesREST(ctx, chain, txBytes)
+	if err != nil {
+		return "", err
+	}
+	if txResp.Code != 0 {
+		return "", fmt.Errorf("authz transaction failed with code %d: %s", txResp.Code, txResp.Codespace)
+	}
+	return txResp.TxHash, nil
+}
+
+// execToFileWithContext runs a CLI command and writes stdout to a file
+func (v *Voter) execToFileWithContext(ctx context.Context, cli string, args []string, outPath string) error {
+	cliPath := v.getBinaryPath(cli)
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+	fullCmd := strings.Join(cmd.Args, " ")
+	v.logger.Info("Executing CLI command", zap.String("command", fullCmd))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("command failed: %w - output: %s", err, string(output))
+	}
+	if err := os.WriteFile(outPath, output, 0644); err != nil {
+		return fmt.Errorf("failed writing output file: %w", err)
+	}
+	return nil
+}
+
+// encodeTxFileToBase64WithContext encodes a signed tx JSON file to base64 using CLI
+func (v *Voter) encodeTxFileToBase64WithContext(ctx context.Context, cli string, signedFile string) (string, error) {
+	cliPath := v.getBinaryPath(cli)
+	cmd := exec.CommandContext(ctx, cliPath, "tx", "encode", signedFile)
+	fullCmd := strings.Join(cmd.Args, " ")
+	v.logger.Info("Encoding tx to base64", zap.String("command", fullCmd))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("encode failed: %w - output: %s", err, string(output))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// broadcastTxBytesREST posts tx_bytes to the REST txs endpoint
+func (v *Voter) broadcastTxBytesREST(ctx context.Context, chain *config.ChainConfig, txBytesBase64 string) (*TxResponse, error) {
+	type broadcastRequest struct {
+		TxBytes string `json:"tx_bytes"`
+		Mode    string `json:"mode"`
+	}
+	type broadcastResponse struct {
+		TxResponse TxResponse `json:"tx_response"`
+	}
+
+	urlBase := strings.TrimRight(v.appendAPIKeyIfEnabled(chain.REST), "/")
+	url := urlBase + "/cosmos/tx/v1beta1/txs"
+	reqBody := broadcastRequest{TxBytes: txBytesBase64, Mode: "BROADCAST_MODE_SYNC"}
+	data, _ := json.Marshal(reqBody)
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer func(body io.ReadCloser) { _ = body.Close() }(resp.Body)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("REST broadcast failed: status %d - body: %s", resp.StatusCode, string(body))
+	}
+
+	var br broadcastResponse
+	if err := json.Unmarshal(body, &br); err != nil {
+		return nil, fmt.Errorf("failed to parse broadcast response: %w - body: %s", err, string(body))
+	}
+	return &br.TxResponse, nil
+}
+
+// defaultGasLimit returns a conservative gas limit for simple messages
+func (v *Voter) defaultGasLimit(chain *config.ChainConfig) string {
+	// Conservative default; adjust per-chain here if needed
+	return "200000"
 }
 
 // appendAPIKeyIfEnabled appends the api_key query parameter to a base URL if configured
