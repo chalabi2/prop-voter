@@ -194,6 +194,13 @@ func (s *Scanner) scanChain(ctx context.Context, chain config.ChainConfig) error
 // tryFetchProposalsV1Beta1 attempts to fetch proposals using the v1beta1 API
 func (s *Scanner) tryFetchProposalsV1Beta1(ctx context.Context, chain config.ChainConfig) ([]ProposalData, error) {
 	url := fmt.Sprintf("%s/cosmos/gov/v1beta1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
+	if s.config.AuthEndpoints.Enabled && s.config.AuthEndpoints.APIKey != "" {
+		if strings.Contains(url, "?") {
+			url = url + "&api_key=" + s.config.AuthEndpoints.APIKey
+		} else {
+			url = url + "?api_key=" + s.config.AuthEndpoints.APIKey
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -243,6 +250,13 @@ func (s *Scanner) tryFetchProposalsV1Beta1(ctx context.Context, chain config.Cha
 // tryFetchProposalsV1 attempts to fetch proposals using the v1 API
 func (s *Scanner) tryFetchProposalsV1(ctx context.Context, chain config.ChainConfig) ([]ProposalData, error) {
 	url := fmt.Sprintf("%s/cosmos/gov/v1/proposals?pagination.limit=5&pagination.reverse=true", chain.REST)
+	if s.config.AuthEndpoints.Enabled && s.config.AuthEndpoints.APIKey != "" {
+		if strings.Contains(url, "?") {
+			url = url + "&api_key=" + s.config.AuthEndpoints.APIKey
+		} else {
+			url = url + "?api_key=" + s.config.AuthEndpoints.APIKey
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
