@@ -218,13 +218,19 @@ func (v *Voter) buildAuthzVoteCommandWithContext(ctx context.Context, chain *con
 
 // buildSignAndBroadcastGovVoteREST constructs, signs, encodes and broadcasts a gov vote via REST
 func (v *Voter) buildSignAndBroadcastGovVoteREST(ctx context.Context, chain *config.ChainConfig, proposalID, option string) (string, error) {
+	// Resolve the bech32 address for generate-only mode
+	fromAddress, err := v.getAddressForKey(ctx, chain)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve from address: %w", err)
+	}
+
 	// 1) Build unsigned tx to temp file
 	unsignedFile := fmt.Sprintf("/tmp/unsigned_vote_%s_%s.json", chain.GetChainID(), proposalID)
 	buildArgs := []string{
 		"tx", "gov", "vote",
 		proposalID,
 		option,
-		"--from", chain.WalletKey,
+		"--from", fromAddress,
 		"--chain-id", chain.GetChainID(),
 		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
 		"--gas", "auto",
@@ -272,6 +278,12 @@ func (v *Voter) buildSignAndBroadcastGovVoteREST(ctx context.Context, chain *con
 
 // buildSignAndBroadcastAuthzVoteREST constructs, signs, encodes and broadcasts an authz vote via REST
 func (v *Voter) buildSignAndBroadcastAuthzVoteREST(ctx context.Context, chain *config.ChainConfig, proposalID, option string) (string, error) {
+	// Resolve the bech32 address for generate-only mode
+	fromAddress, err := v.getAddressForKey(ctx, chain)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve from address: %w", err)
+	}
+
 	// Prepare the authz exec message file
 	msgFile := fmt.Sprintf("/tmp/vote_msg_%s_%s.json", chain.GetChainID(), proposalID)
 	govVoteMsg := fmt.Sprintf(`{
@@ -296,7 +308,7 @@ func (v *Voter) buildSignAndBroadcastAuthzVoteREST(ctx context.Context, chain *c
 	buildArgs := []string{
 		"tx", "authz", "exec",
 		msgFile,
-		"--from", chain.WalletKey,
+		"--from", fromAddress,
 		"--chain-id", chain.GetChainID(),
 		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
 		"--gas", "auto",
@@ -456,6 +468,21 @@ func (v *Voter) getBinaryPath(cliName string) string {
 
 	// Fall back to system PATH
 	return cliName
+}
+
+// getAddressForKey returns the bech32 address for the configured key (required in generate-only)
+func (v *Voter) getAddressForKey(ctx context.Context, chain *config.ChainConfig) (string, error) {
+	cliPath := v.getBinaryPath(chain.GetCLIName())
+	cmd := exec.CommandContext(ctx, cliPath, "keys", "show", chain.WalletKey, "--address", "--keyring-backend", "test")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get address for key %s: %w - output: %s", chain.WalletKey, err, string(output))
+	}
+	addr := strings.TrimSpace(string(output))
+	if addr == "" {
+		return "", fmt.Errorf("empty address returned for key %s", chain.WalletKey)
+	}
+	return addr, nil
 }
 
 // calculateFees calculates appropriate fees for the transaction
