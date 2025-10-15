@@ -57,7 +57,10 @@ func (v *Voter) Vote(chainID, proposalID, option string) (string, error) {
 
 	cmd := v.buildVoteCommandWithContext(ctx, chainConfig, proposalID, option)
 
-	v.logger.Debug("Executing vote command", zap.Strings("cmd", cmd.Args))
+	// Always log the full CLI command string for visibility without debug mode
+	fullCmd := strings.Join(cmd.Args, " ")
+	v.logger.Info("Executing vote command", zap.String("command", fullCmd))
+	v.logger.Debug("Executing vote command (args)", zap.Strings("cmd", cmd.Args))
 
 	// Execute the command with timeout
 	output, err := cmd.CombinedOutput()
@@ -141,7 +144,10 @@ func (v *Voter) VoteAuthz(chainID, proposalID, option string) (string, error) {
 
 	cmd := v.buildAuthzVoteCommandWithContext(ctx, chainConfig, proposalID, option)
 
-	v.logger.Debug("Executing authz vote command", zap.Strings("cmd", cmd.Args))
+	// Always log the full CLI command string for visibility without debug mode
+	fullCmd := strings.Join(cmd.Args, " ")
+	v.logger.Info("Executing authz vote command", zap.String("command", fullCmd))
+	v.logger.Debug("Executing authz vote command (args)", zap.Strings("cmd", cmd.Args))
 
 	// Execute the command with timeout
 	output, err := cmd.CombinedOutput()
