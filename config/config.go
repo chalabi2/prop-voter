@@ -40,8 +40,9 @@ type SecurityConfig struct {
 
 // AuthEndpointsConfig controls optional API key query param on RPC/REST endpoints
 type AuthEndpointsConfig struct {
-	Enabled bool   `mapstructure:"enabled"`
-	APIKey  string `mapstructure:"api_key"`
+	Enabled    bool   `mapstructure:"enabled"`
+	APIKey     string `mapstructure:"api_key"`
+	ApplyToRPC bool   `mapstructure:"apply_to_rpc"`
 }
 
 // ChainConfig represents a single Cosmos chain configuration
@@ -153,6 +154,7 @@ func LoadConfig(path string) (*Config, error) {
 	// Set defaults
 	viper.SetDefault("auth_endpoints.enabled", false)
 	viper.SetDefault("auth_endpoints.api_key", "")
+	viper.SetDefault("auth_endpoints.apply_to_rpc", false)
 	viper.SetDefault("scanning.interval", "5m")
 	viper.SetDefault("scanning.batch_size", 10)
 	viper.SetDefault("database.path", "./prop-voter.db")

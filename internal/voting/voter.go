@@ -232,7 +232,7 @@ func (v *Voter) buildSignAndBroadcastGovVoteREST(ctx context.Context, chain *con
 		option,
 		"--from", fromAddress,
 		"--chain-id", chain.GetChainID(),
-		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--node", v.appendAPIKeyForRPC(chain.RPC),
 		"--gas", "auto",
 		"--gas-adjustment", "1.3",
 		"--fees", v.calculateFees(chain),
@@ -251,7 +251,7 @@ func (v *Voter) buildSignAndBroadcastGovVoteREST(ctx context.Context, chain *con
 		"tx", "sign", unsignedFile,
 		"--from", chain.WalletKey,
 		"--chain-id", chain.GetChainID(),
-		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--node", v.appendAPIKeyForRPC(chain.RPC),
 		"--keyring-backend", "test",
 		"--output", "json",
 	}
@@ -310,7 +310,7 @@ func (v *Voter) buildSignAndBroadcastAuthzVoteREST(ctx context.Context, chain *c
 		msgFile,
 		"--from", fromAddress,
 		"--chain-id", chain.GetChainID(),
-		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--node", v.appendAPIKeyForRPC(chain.RPC),
 		"--gas", "auto",
 		"--gas-adjustment", "1.3",
 		"--fees", v.calculateFees(chain),
@@ -328,7 +328,7 @@ func (v *Voter) buildSignAndBroadcastAuthzVoteREST(ctx context.Context, chain *c
 		"tx", "sign", unsignedFile,
 		"--from", chain.WalletKey,
 		"--chain-id", chain.GetChainID(),
-		"--node", v.appendAPIKeyIfEnabled(chain.RPC),
+		"--node", v.appendAPIKeyForRPC(chain.RPC),
 		"--keyring-backend", "test",
 		"--output", "json",
 	}
@@ -392,8 +392,9 @@ func (v *Voter) broadcastTxBytesREST(ctx context.Context, chain *config.ChainCon
 		TxResponse TxResponse `json:"tx_response"`
 	}
 
-	urlBase := strings.TrimRight(v.appendAPIKeyIfEnabled(chain.REST), "/")
-	url := urlBase + "/cosmos/tx/v1beta1/txs"
+	urlBase := strings.TrimRight(chain.REST, "/")
+	url := strings.TrimRight(v.appendAPIKeyIfEnabled(urlBase+"/cosmos/tx/v1beta1/txs"), "/")
+	v.logger.Info("Broadcasting via REST", zap.String("url", strings.Split(url, "?")[0]))
 	reqBody := broadcastRequest{TxBytes: txBytesBase64, Mode: "BROADCAST_MODE_SYNC"}
 	data, _ := json.Marshal(reqBody)
 
@@ -434,6 +435,17 @@ func (v *Voter) defaultGasLimit(chain *config.ChainConfig) string {
 // appendAPIKeyIfEnabled appends the api_key query parameter to a base URL if configured
 func (v *Voter) appendAPIKeyIfEnabled(base string) string {
 	if v.config.AuthEndpoints.Enabled && v.config.AuthEndpoints.APIKey != "" {
+		if strings.Contains(base, "?") {
+			return base + "&api_key=" + v.config.AuthEndpoints.APIKey
+		}
+		return base + "?api_key=" + v.config.AuthEndpoints.APIKey
+	}
+	return base
+}
+
+// appendAPIKeyForRPC appends API key only if configuration allows applying to RPC
+func (v *Voter) appendAPIKeyForRPC(base string) string {
+	if v.config.AuthEndpoints.Enabled && v.config.AuthEndpoints.ApplyToRPC && v.config.AuthEndpoints.APIKey != "" {
 		if strings.Contains(base, "?") {
 			return base + "&api_key=" + v.config.AuthEndpoints.APIKey
 		}
